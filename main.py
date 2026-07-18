@@ -22,6 +22,7 @@ from chat_sender import ChatSender, MockChatSender
 from chat_reader import ChatReader, extract_channel_id
 from memory.memory_store import MemoryStore
 from memory.memory_manager import MemoryManager
+from core_logic import approval_action
 
 
 class ChzzkVoiceBot:
@@ -591,13 +592,14 @@ class ChzzkVoiceBot:
                     mode_labels = {"ai": "AI", "mimic": "따라하기", "hybrid": "하이브리드"}
                     mode_label = mode_labels.get(self.response_mode, self.response_mode)
                     choice = input(f"  [{mode_label}] [{response}] Enter=전송 / s=스킵 / e=수정 / m=모드전환: ").strip().lower()
-                    if choice == 'm':
+                    action = approval_action(choice)
+                    if action == 'mode':
                         self._cycle_mode()
                         continue
-                    elif choice == 's':
+                    elif action == 'skip':
                         print("  스킵됨")
                         continue
-                    elif choice == 'e':
+                    elif action == 'edit':
                         new_text = input("  수정 메시지: ").strip()
                         if not new_text:
                             print("  스킵됨")

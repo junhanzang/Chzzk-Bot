@@ -1,10 +1,9 @@
 import os
-import re
 import requests
-import json
 import threading
 from collections import deque
 from config import Config
+from core_logic import build_llm_messages, postprocess_llm_response
 
 
 class LLMHandler:
@@ -113,45 +112,13 @@ class LLMHandler:
         Returns:
             list[dict]: [{"role": "system"|"user"|"assistant", "content": ...}]
         """
-        messages = [{"role": "system", "content": self.system_prompt}]
-
-        # 유저 메시지에 컨텍스트 포함
-        user_parts = []
-
-        # 메모리 섹션
-        memory_section = []
-        if streamer_memory:
-            memory_section.append(f"스트리머 특징:\n{streamer_memory}")
-        if chat_memory:
-            memory_section.append(f"채팅 분위기:\n{chat_memory}")
-        if my_chat_memory:
-            memory_section.append(f"내 응답 패턴:\n{my_chat_memory}")
-
-        if memory_section:
-            user_parts.append("[참고 정보]")
-            user_parts.append("\n".join(memory_section))
-
-        # 최근 채팅 컨텍스트
-        if chat_context:
-            user_parts.append("현재 채팅창 분위기:")
-            user_parts.append(chat_context)
-
-        # 대화 히스토리
         with self._context_lock:
             history = list(self.context)
-        if history:
-            user_parts.append("대화 히스토리:")
-            for item in history:
-                role_name = "스트리머" if item["role"] == "streamer" else "나"
-                user_parts.append(f"{role_name}: {item['text']}")
-
-        # 현재 스트리머 발언
-        user_parts.append(f"스트리머가 방금 한 말: \"{streamer_speech}\"")
-        user_parts.append("이 말에 대한 채팅 한 줄 (다른 시청자 채팅과 겹치지 않게):")
-
-        messages.append({"role": "user", "content": "\n".join(user_parts)})
-
-        return messages
+        return build_llm_messages(
+            self.system_prompt, streamer_speech, history=history,
+            chat_context=chat_context, streamer_memory=streamer_memory,
+            chat_memory=chat_memory, my_chat_memory=my_chat_memory,
+        )
 
     def generate_response(self, streamer_speech, chat_context="",
                           streamer_memory="", chat_memory="", my_chat_memory=""):
@@ -224,45 +191,7 @@ class LLMHandler:
 
     def _postprocess_response(self, text):
         """생성된 응답 후처리"""
-        if not text:
-            return None
-
-        # qwen3 thinking 태그 제거
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        text = re.sub(r"<think>.*", "", text, flags=re.DOTALL).strip()
-
-        # 줄바꿈 → 첫 줄만 사용
-        text = text.split("\n")[0].strip()
-
-        # 영어 설명/번역 패턴 제거 ("한국어" which translates to... 패턴)
-        text = re.sub(r'"\s*(which|translat|meaning|seems|or\s+"|that|this|the|but|so|and|is|I |it |not|look)\b.*', '', text, flags=re.IGNORECASE).strip()
-
-        # 앞쪽 영어 사고 과정 제거 → 첫 한글 위치부터 추출
-        korean_match = re.search(r'[가-힣ㄱ-ㅎㅏ-ㅣ]', text)
-        if korean_match and korean_match.start() > 0:
-            text = text[korean_match.start():]
-        elif not korean_match:
-            return None
-
-        # 한자(CJK), 일본어 등 비한글 유니코드 제거
-        text = re.sub(r'[\u2E80-\u9FFF\u3040-\u309F\u30A0-\u30FF]', '', text).strip()
-
-        # 뒤쪽에 남은 영어 꼬리 제거 (한글 뒤에 붙은 영어)
-        text = re.sub(r'\s+[a-zA-Z][\w\s]*$', '', text).strip()
-
-        # 따옴표/라벨 제거
-        text = re.sub(r'^(응답:\s*|Response:\s*)', '', text).strip()
-        text = text.strip('"\'')
-
-        # 50자 제한
-        if len(text) > 50:
-            text = text[:50]
-
-        # 빈 응답 체크
-        if not text or len(text) < 2:
-            return None
-
-        return text
+        return postprocess_llm_response(text)
 
     def should_respond(self, streamer_speech, chat_context=""):
         """스마트 응답: 이 발화에 응답할지 LLM이 판단

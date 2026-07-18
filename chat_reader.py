@@ -9,6 +9,7 @@ import threading
 from collections import deque
 
 from chzzkpy.unofficial.chat import ChatClient, ChatMessage, DonationMessage
+from core_logic import extract_channel_id
 
 
 class ChatReader:
@@ -202,18 +203,6 @@ class ChatReader:
         if self._thread:
             self._thread.join(timeout=5)
         print("채팅 리더 종료")
-
-
-def extract_channel_id(url: str) -> str:
-    """치지직 URL에서 채널 ID 추출
-
-    예: https://chzzk.naver.com/live/d0888e44767fbc1ee86bbba49c6cd848
-    → d0888e44767fbc1ee86bbba49c6cd848
-    """
-    url = url.strip().rstrip("/")
-    # /live/CHANNEL_ID 또는 /CHANNEL_ID 형태
-    parts = url.split("/")
-    return parts[-1]
 
 
 if __name__ == "__main__":
