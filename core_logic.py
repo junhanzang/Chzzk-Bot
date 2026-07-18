@@ -1,6 +1,7 @@
 """Standard-library-only business logic for the Chzzk voice bot."""
 
 import re
+from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
 
@@ -64,6 +65,76 @@ def postprocess_llm_response(text, max_length=50):
     text = text.strip("\"'")
     text = text[:max_length]
     return text if len(text) >= 2 else None
+
+
+# 치지직 일반 채팅 입력 상한 (자)
+CHZZK_CHAT_MAX_LENGTH = 100
+
+_QUOTE_CHARS = "\"'`“”‘’「」『』«»"
+
+
+def parse_banned_words(raw):
+    """Parse a comma/newline separated banned-word setting into a tuple."""
+    words = []
+    for part in re.split(r"[,\n]", raw or ""):
+        word = part.strip()
+        if word and word.lower() not in (w.lower() for w in words):
+            words.append(word)
+    return tuple(words)
+
+
+def clean_chat_message(text):
+    """Strip surrounding whitespace and stray quote characters."""
+    return (text or "").strip(_QUOTE_CHARS + " \t\r\n　")
+
+
+def contains_banned_word(text, banned_words):
+    """Case-insensitive substring check against a banned-word list."""
+    lowered = (text or "").lower()
+    return bool(lowered) and any(
+        word.strip() and word.strip().lower() in lowered
+        for word in banned_words
+    )
+
+
+def _normalize_for_similarity(text):
+    """Lowercase, drop whitespace, collapse character runs (ㅋㅋㅋ == ㅋㅋ)."""
+    collapsed = re.sub(r"\s+", "", (text or "").lower())
+    return re.sub(r"(.)\1+", r"\1", collapsed)
+
+
+def is_repetitive_message(text, recent_messages, similarity_threshold=0.8):
+    """True if text is identical or too similar to any recent message."""
+    norm = _normalize_for_similarity(text)
+    if not norm:
+        return False
+    for previous in recent_messages:
+        prev_norm = _normalize_for_similarity(previous)
+        if not prev_norm:
+            continue
+        if norm == prev_norm:
+            return True
+        if SequenceMatcher(None, norm, prev_norm).ratio() >= similarity_threshold:
+            return True
+    return False
+
+
+def guard_chat_message(text, *, recent_messages=(), banned_words=(),
+                       max_length=CHZZK_CHAT_MAX_LENGTH, similarity_threshold=0.8):
+    """Final safety guard for an outgoing chat message.
+
+    Returns the cleaned message to send, or None if it must be dropped.
+    """
+    cleaned = clean_chat_message(text)
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].rstrip()
+    if not cleaned:
+        return None
+    if contains_banned_word(cleaned, banned_words):
+        return None
+    if is_repetitive_message(cleaned, recent_messages, similarity_threshold):
+        return None
+    return cleaned
 
 
 class ChatReconnectPolicy:

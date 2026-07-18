@@ -3,25 +3,29 @@ import requests
 import threading
 from collections import deque
 from config import Config
-from core_logic import build_llm_messages, postprocess_llm_response
+from core_logic import build_llm_messages, guard_chat_message, postprocess_llm_response
 
 
 class LLMHandler:
     """Ollama 기반 LLM 처리 클래스"""
 
-    def __init__(self, model_name=None, host=None, context_size=5, chat_log_path=None):
+    def __init__(self, model_name=None, host=None, context_size=5, chat_log_path=None,
+                 banned_words=None):
         """
         Args:
             model_name: Ollama 모델 이름
             host: Ollama 서버 호스트
             context_size: 유지할 대화 컨텍스트 크기
             chat_log_path: 내 채팅 로그 파일 경로 (스타일 학습용)
+            banned_words: 금칙어 목록 (None이면 Config.BANNED_WORDS 사용)
         """
         self.model_name = model_name or Config.OLLAMA_MODEL
         self.host = host or Config.OLLAMA_HOST
         self.api_url = f"{self.host}/api/chat"
         self.context = deque(maxlen=context_size)
         self._context_lock = threading.Lock()
+        self.banned_words = tuple(banned_words) if banned_words is not None else Config.BANNED_WORDS
+        self.recent_responses = deque(maxlen=10)
         self.my_chat_examples = self._load_chat_log(chat_log_path)
         self.system_prompt = self._get_system_prompt()
 
@@ -173,6 +177,13 @@ class LLMHandler:
                     print(f"[LLM] 후처리 후 빈 응답 (원본: {raw_text[:80]})")
                     return None
 
+                # 전송 전 안전 가드 (반복/금칙어/길이/잔여 따옴표)
+                generated_text = self._apply_safety_guard(generated_text)
+
+                if not generated_text:
+                    print(f"[LLM] 안전 가드에 걸러진 응답 (원본: {raw_text[:80]})")
+                    return None
+
                 # 컨텍스트에 추가
                 self.add_to_context("streamer", streamer_speech)
                 self.add_to_context("bot", generated_text)
@@ -192,6 +203,18 @@ class LLMHandler:
     def _postprocess_response(self, text):
         """생성된 응답 후처리"""
         return postprocess_llm_response(text)
+
+    def _apply_safety_guard(self, text):
+        """전송 전 안전 가드. 통과한 메시지는 최근 응답 기록에 추가된다."""
+        with self._context_lock:
+            guarded = guard_chat_message(
+                text,
+                recent_messages=self.recent_responses,
+                banned_words=self.banned_words,
+            )
+            if guarded:
+                self.recent_responses.append(guarded)
+        return guarded
 
     def should_respond(self, streamer_speech, chat_context=""):
         """스마트 응답: 이 발화에 응답할지 LLM이 판단

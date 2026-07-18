@@ -1,6 +1,8 @@
 import os
 from dotenv import load_dotenv
 
+from core_logic import parse_banned_words
+
 load_dotenv()
 
 
@@ -33,6 +35,7 @@ class Config:
     SMART_RESPONSE = os.getenv("SMART_RESPONSE", "false").lower() == "true"
     RESPONSE_MODE = os.getenv("RESPONSE_MODE", "hybrid")  # "ai", "mimic", "hybrid"
     WARMUP_SECONDS = int(os.getenv("WARMUP_SECONDS", "0"))  # 시작 후 관찰만 하는 시간 (초)
+    BANNED_WORDS = parse_banned_words(os.getenv("BANNED_WORDS", ""))  # 쉼표로 구분
 
     # 네이버 로그인 쿠키 (채팅 전송용)
     NID_AUT = os.getenv("NID_AUT", "")
@@ -70,6 +73,7 @@ class Config:
         print(f"응답 확률: {cls.RESPONSE_CHANCE}")
         print(f"스마트 응답: {'켜짐' if cls.SMART_RESPONSE else '꺼짐'}")
         print(f"응답 모드: {cls.RESPONSE_MODE}")
+        print(f"금칙어: {len(cls.BANNED_WORDS)}개")
         print(f"워밍업: {cls.WARMUP_SECONDS}초" if cls.WARMUP_SECONDS > 0 else "워밍업: 없음")
         print(f"치지직 채널 ID: {cls.CHZZK_CHANNEL_ID}")
         print(f"네이버 쿠키: {'설정됨' if cls.NID_AUT else '미설정'}")
