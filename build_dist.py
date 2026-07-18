@@ -26,6 +26,7 @@ ZIP_PATH = SCRIPT_DIR.parent / f"ChzzkBot-v{VERSION}.zip"
 SOURCE_FILES = [
     "main.py",
     "config.py",
+    "core_logic.py",
     "chat_sender.py",
     "chat_reader.py",
     "llm_handler.py",

@@ -66,6 +66,71 @@ def postprocess_llm_response(text, max_length=50):
     return text if len(text) >= 2 else None
 
 
+class ChatReconnectPolicy:
+    """Pure reconnect state machine with exponential backoff (no I/O, no chzzkpy).
+
+    States and transitions:
+        connecting -> connected   (on_connected: handshake succeeded)
+        connecting -> waiting     (on_disconnected: attempt failed)
+        connected  -> waiting     (on_disconnected: live connection dropped)
+        waiting    -> connecting  (on_retry: backoff wait finished)
+        any        -> stopped     (on_stopped: terminal, no further retries)
+    """
+
+    def __init__(self, initial_delay: float = 3.0, max_delay: float = 60.0,
+                 factor: float = 2.0):
+        if initial_delay <= 0:
+            raise ValueError("initial_delay must be positive")
+        if max_delay < initial_delay:
+            raise ValueError("max_delay must be >= initial_delay")
+        if factor < 1:
+            raise ValueError("factor must be >= 1")
+        self.initial_delay = float(initial_delay)
+        self.max_delay = float(max_delay)
+        self.factor = float(factor)
+        self.state = "connecting"
+        self._failures = 0
+
+    @property
+    def consecutive_failures(self) -> int:
+        return self._failures
+
+    def should_retry(self) -> bool:
+        return self.state != "stopped"
+
+    def on_connected(self):
+        """Handshake succeeded: reset the backoff schedule."""
+        if self.state != "stopped":
+            self.state = "connected"
+            self._failures = 0
+
+    def on_disconnected(self) -> float:
+        """Attempt failed or connection dropped: seconds to wait before retrying."""
+        if self.state == "stopped":
+            return 0.0
+        self.state = "waiting"
+        delay = self._current_delay()
+        self._failures += 1
+        return delay
+
+    def on_retry(self):
+        """Backoff wait finished: the next connection attempt starts."""
+        if self.state != "stopped":
+            self.state = "connecting"
+
+    def on_stopped(self):
+        """Shutdown requested: terminal state, no further retries."""
+        self.state = "stopped"
+
+    def _current_delay(self) -> float:
+        delay = self.initial_delay
+        for _ in range(self._failures):
+            if delay >= self.max_delay:
+                break
+            delay *= self.factor
+        return min(delay, self.max_delay)
+
+
 def approval_action(choice: str) -> str:
     """Classify a manual approval answer."""
     return {"s": "skip", "e": "edit", "m": "mode"}.get(
