@@ -19,3 +19,13 @@ unsloth_compiled_cache/
 
 # 기타
 test_audio.py
+
+# Desktop companion dependencies and local verification output
+node_modules/
+.cache/
+desktop/.artifacts/
+desktop/dist/
+browser-extension/dist/
+/release/
+/.artifacts/
+.pytest_cache/

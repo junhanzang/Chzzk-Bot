@@ -1,0 +1,11 @@
+{
+  "name": "chzzk-desk-browser",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "check": "node ../scripts/check-desk.cjs",
+    "package": "node scripts/package.cjs"
+  }
+}

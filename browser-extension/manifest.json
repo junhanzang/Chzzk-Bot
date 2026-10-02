@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "치지직 데스크",
+  "version": "0.3.0",
+  "description": "치지직 방송 네 개의 배치와 소리를 관리하고 통나무 보상을 자동 수령합니다. 앱을 연결하면 최근 구간도 저장할 수 있어요.",
+  "minimum_chrome_version": "116",
+  "incognito": "not_allowed",
+  "permissions": ["storage", "sidePanel"],
+  "host_permissions": ["https://chzzk.naver.com/*", "https://api.chzzk.naver.com/*", "http://127.0.0.1/*"],
+  "content_scripts": [{
+    "matches": ["https://chzzk.naver.com/*"],
+    "js": ["shared/rewards.js", "content/rewards-adapter.js"],
+    "run_at": "document_idle",
+    "all_frames": false
+  }],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "치지직 데스크 열기" },
+  "side_panel": { "default_path": "panel.html" },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src http://127.0.0.1:* https://api.chzzk.naver.com"
+  },
+  "commands": {
+    "listen-a": { "suggested_key": { "default": "Alt+Shift+1" }, "description": "A 방송 듣기" },
+    "listen-b": { "suggested_key": { "default": "Alt+Shift+2" }, "description": "B 방송 듣기" },
+    "mute-all": { "suggested_key": { "default": "Alt+Shift+M" }, "description": "관리 중인 방송 모두 음소거" },
+    "save-recent": { "suggested_key": { "default": "Ctrl+Shift+S" }, "description": "데스크톱 앱으로 선택한 길이의 최근 구간 저장" }
+  }
+}

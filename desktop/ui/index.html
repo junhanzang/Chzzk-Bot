@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'">
+  <title>치지직 데스크</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="renderer.mjs"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="치지직 데스크 홈"><span class="brand-symbol" aria-hidden="true">ㄷ</span><span>치지직 <strong>데스크</strong><small>내 방송, 내 자리.</small></span></a>
+    <form id="channel-form" class="channel-form" aria-label="즐겨찾는 채널 추가">
+      <span class="input-icon" aria-hidden="true">＋</span>
+      <input id="channel-input" type="text" placeholder="치지직 채널 주소 또는 채널 ID" aria-label="치지직 채널 주소 또는 채널 ID" autocomplete="off" required>
+      <input id="channel-name" type="text" placeholder="채널 이름 (선택)" aria-label="채널 이름 (선택)" maxlength="60" autocomplete="off">
+      <button class="button button-accent" id="add-channel" type="submit">채널 추가</button>
+    </form>
+    <button class="button button-quiet" id="login-button" type="button"><span aria-hidden="true">↗</span><span id="login-label">네이버 로그인</span></button>
+  </header>
+
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-label"><h2>즐겨찾는 채널</h2><span class="count" id="channel-count">0</span></div>
+      <p class="sidebar-description">A · B · C · D에서 시청할 자리를 골라요.</p>
+      <input id="channel-search" class="collection-search" type="search" placeholder="즐겨찾기 검색" aria-label="즐겨찾기 이름 또는 채널 ID 검색" autocomplete="off" maxlength="200">
+      <div id="channels-list" class="channels-list"></div>
+      <p id="channels-no-results" class="search-empty" role="status" hidden>검색에 맞는 채널이 없어요.</p>
+      <div class="sidebar-empty" id="channels-empty"><div class="empty-bookmark" aria-hidden="true">＋</div><strong>좋아하는 방송부터</strong><p>위에 채널 주소를 넣으면<br>여기에 모아둘 수 있어요.</p></div>
+      <div class="sidebar-bottom"><span class="local-dot" aria-hidden="true"></span><span>기록과 클립은 내 컴퓨터에</span><small id="version-label">DESK / 로컬 보관</small></div>
+    </aside>
+
+    <main class="workspace">
+      <section class="workspace-heading" aria-label="시청 환경">
+        <div><div class="eyebrow">MY WATCH SPACE</div><h1>오늘도, 편하게 보세요.</h1></div>
+        <div class="workspace-tools"><span id="preview-badge" class="preview-badge" hidden>UI 미리보기</span><button id="mute-button" class="button button-quiet" type="button" title="앱 내부 방송의 소리를 끕니다. 크롬 방송의 소리는 확장에서 전환하세요."><span aria-hidden="true">◌</span> 앱 음소거 <kbd>M</kbd></button></div>
+      </section>
+
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <section class="view-options" aria-label="화면 배치와 통나무 보상">
+        <div class="layout-options"><label for="layout-select">화면 배치</label><select id="layout-select"><option value="side-by-side">나란히</option><option value="stacked">세로</option><option value="grid">4분할</option><option value="focus">메인 크게</option></select><label for="main-slot-select">메인</label><select id="main-slot-select" aria-label="메인 방송"><option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option></select><label for="clip-seconds">저장 길이</label><select id="clip-seconds"><option value="15">15초</option><option value="30" selected>30초</option><option value="60">60초</option></select></div>
+        <div class="reward-options"><label class="buffer-toggle"><input id="auto-rewards" type="checkbox" aria-describedby="reward-help"><span class="switch" aria-hidden="true"></span><span>통나무 자동 수령</span></label><p id="reward-help">앱에서 시청 중 표시된 보상 자동 받기 · 시청 시간은 한 방송만 집계돼요.</p></div>
+      </section>
+
+      <section class="players-grid" aria-label="방송 시청 자리">
+        <article class="player-card" data-slot="0" aria-label="방송 A">
+          <header class="player-header"><span class="slot-letter">A</span><div class="player-heading"><h2 data-role="title">방송을 추가해 주세요</h2><p data-role="page-status">첫 번째 시청 자리</p></div><div class="player-menu"><button class="icon-button" data-action="reload" type="button" aria-label="방송 A 새로고침" title="새로고침">↻</button><button class="icon-button" data-action="external" type="button" aria-label="방송 A 브라우저에서 열기" title="브라우저에서 열기">↗</button><button class="icon-button" data-action="clear" type="button" aria-label="방송 A 자리 비우기" title="자리 비우기">×</button></div></header>
+          <div class="player-surface" data-role="surface"><div class="player-empty" data-role="empty"><div class="empty-screen" aria-hidden="true"><span>＋</span></div><h3>여기에 좋아하는 방송을</h3><p>상단에서 채널을 추가하거나<br>즐겨찾기의 <b>A</b> 버튼을 눌러주세요.</p></div></div>
+          <footer class="player-footer"><div class="audio-row"><button class="button audio-button" data-action="audio" type="button"><span aria-hidden="true">◖</span><span data-role="audio-label">이 방송 듣기</span><kbd>1</kbd></button><label class="buffer-toggle"><input data-role="buffer-toggle" type="checkbox"><span class="switch" aria-hidden="true"></span><span>최근 구간 보관</span></label></div><div class="buffer-row"><div class="buffer-status"><span class="buffer-dot" data-role="buffer-dot" aria-hidden="true"></span><span data-role="buffer-status">보관 꺼짐</span></div><button class="button clip-button" data-action="save" type="button"><span aria-hidden="true">↓</span><span data-role="save-label">최근 약 30초 저장</span></button></div><p class="player-note" data-role="note">구간 보관을 켜면 지난 장면을 클립으로 저장할 수 있어요.</p></footer>
+        </article>
+        <article class="player-card" data-slot="1" aria-label="방송 B">
+          <header class="player-header"><span class="slot-letter">B</span><div class="player-heading"><h2 data-role="title">방송을 추가해 주세요</h2><p data-role="page-status">두 번째 시청 자리</p></div><div class="player-menu"><button class="icon-button" data-action="reload" type="button" aria-label="방송 B 새로고침" title="새로고침">↻</button><button class="icon-button" data-action="external" type="button" aria-label="방송 B 브라우저에서 열기" title="브라우저에서 열기">↗</button><button class="icon-button" data-action="clear" type="button" aria-label="방송 B 자리 비우기" title="자리 비우기">×</button></div></header>
+          <div class="player-surface" data-role="surface"><div class="player-empty" data-role="empty"><div class="empty-screen" aria-hidden="true"><span>＋</span></div><h3>같이 볼 방송도 한 자리에</h3><p>즐겨찾기의 <b>B</b> 버튼을 누르면<br>두 방송을 나란히 볼 수 있어요.</p></div></div>
+          <footer class="player-footer"><div class="audio-row"><button class="button audio-button" data-action="audio" type="button"><span aria-hidden="true">◖</span><span data-role="audio-label">이 방송 듣기</span><kbd>2</kbd></button><label class="buffer-toggle"><input data-role="buffer-toggle" type="checkbox"><span class="switch" aria-hidden="true"></span><span>최근 구간 보관</span></label></div><div class="buffer-row"><div class="buffer-status"><span class="buffer-dot" data-role="buffer-dot" aria-hidden="true"></span><span data-role="buffer-status">보관 꺼짐</span></div><button class="button clip-button" data-action="save" type="button"><span aria-hidden="true">↓</span><span data-role="save-label">최근 약 30초 저장</span></button></div><p class="player-note" data-role="note">구간 보관을 켜면 지난 장면을 클립으로 저장할 수 있어요.</p></footer>
+        </article>
+      </section>
+
+      <section class="bottom-grid" aria-label="클립과 사용 안내">
+        <div class="clips-panel"><header class="section-heading"><div><span class="eyebrow">SAVED MOMENTS</span><h2>놓치기 아까운 순간 <span id="clip-count" class="count">0</span></h2></div><button id="clips-folder" class="text-button" type="button">폴더 열기 <span aria-hidden="true">↗</span></button></header><input id="clip-search" class="collection-search" type="search" placeholder="방송·파일명으로 클립 검색" aria-label="방송 또는 파일명으로 클립 검색" autocomplete="off" maxlength="200"><div id="clips-list" class="clips-list"></div><p id="clips-no-results" class="search-empty" role="status" hidden>검색에 맞는 클립이 없어요.</p><div class="clips-empty" id="clips-empty"><div class="clip-empty-icon" aria-hidden="true">▤</div><div><strong>다시 보고 싶은 순간을 모아두세요.</strong><p>‘최근 구간 보관’을 켠 뒤 저장할 길이를 고르고 저장해요.</p></div></div><p class="search-scope">최근 클립 최대 100개에서 검색해요. 이전 파일은 폴더에서 확인하세요.</p></div>
+        <aside class="guide-panel browser-guide"><span class="eyebrow">DESK + CHROME</span><h2>크롬과 함께 쓰기</h2><p>크롬의 공식 플레이어로 시청하고,<br>앱에서 클립을 보관하세요.</p><div class="connection-buttons"><button id="browser-connect" class="button button-quiet" type="button">연결 코드 복사</button><button id="browser-reset" class="text-button" type="button">연결 초기화</button></div><p id="browser-connection-status" role="status">크롬 연결 준비 중</p><small>확장 프로그램의 ‘앱 연결’에 붙여 넣으세요.<br>앱을 다시 실행하면 새 코드로 연결해 주세요.</small></aside>
+      </section>
+      <footer class="workspace-footer"><span title="앱 패널에서는 1~4로 소리 선택, M으로 앱 음소거">방송 화면 안: Ctrl+Alt+1~4 · Ctrl+Alt+M</span><span id="recorder-status">녹화 도구 확인 중</span><span>클립 길이는 방송 구간에 따라 조금 달라질 수 있어요.</span></footer>
+    </main>
+  </div>
+</body>
+</html>

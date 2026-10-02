@@ -1,0 +1,55 @@
+name: Release Chzzk Desk
+
+on:
+  push:
+    tags: ['desk-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desk-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: startsWith(github.ref, 'refs/tags/desk-v')
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish verified release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Validate tag and release notes
+        id: metadata
+        run: node scripts/release-bundle.cjs metadata --require-tag
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: chzzk-desk-distribution
+          path: release
+      - name: Verify all release assets
+        run: node scripts/release-bundle.cjs verify
+      - name: Publish assets as a prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          # Do not replace an existing release or mutate its downloaded files.
+          gh release create "$RELEASE_TAG" release/* \
+            --verify-tag --prerelease --latest=false \
+            --title "Chzzk Desk v$RELEASE_VERSION" \
+            --notes-file "docs/releases/$RELEASE_VERSION.md"
