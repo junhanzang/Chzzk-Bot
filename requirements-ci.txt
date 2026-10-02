@@ -1,0 +1,4 @@
+# Unit-test runner and the lightweight imports used by llm_handler/config.
+pytest==8.4.2
+requests==2.32.5
+python-dotenv==1.2.1
