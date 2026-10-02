@@ -27,6 +27,8 @@ SOURCE_FILES = [
     "main.py",
     "config.py",
     "core_logic.py",
+    "response_pipeline.py",
+    "audio_buffer.py",
     "chat_sender.py",
     "chat_reader.py",
     "llm_handler.py",

@@ -31,6 +31,9 @@ class Config:
     # 채팅 설정
     MIN_SPEECH_LENGTH = int(os.getenv("MIN_SPEECH_LENGTH", "3"))
     RESPONSE_COOLDOWN = int(os.getenv("RESPONSE_COOLDOWN", "10"))
+    RESPONSE_MAX_AGE_SECONDS = float(os.getenv("RESPONSE_MAX_AGE_SECONDS", "20"))
+    CHAT_CONTEXT_MAX_AGE_SECONDS = float(os.getenv("CHAT_CONTEXT_MAX_AGE_SECONDS", "30"))
+    SPEECH_CONTEXT_MAX_AGE_SECONDS = float(os.getenv("SPEECH_CONTEXT_MAX_AGE_SECONDS", "45"))
     RESPONSE_CHANCE = float(os.getenv("RESPONSE_CHANCE", "1.0"))
     SMART_RESPONSE = os.getenv("SMART_RESPONSE", "false").lower() == "true"
     RESPONSE_MODE = os.getenv("RESPONSE_MODE", "hybrid")  # "ai", "mimic", "hybrid"
@@ -68,8 +71,10 @@ class Config:
         print(f"오디오 청크 길이: {cls.AUDIO_CHUNK_DURATION}초")
         print(f"LLM 최대 토큰: {cls.LLM_MAX_TOKENS}")
         print(f"LLM 컨텍스트: {cls.LLM_NUM_CTX}")
-        print(f"최소 발화 길이: {cls.MIN_SPEECH_LENGTH}초")
         print(f"응답 쿨다운: {cls.RESPONSE_COOLDOWN}초")
+        print(f"응답 유효시간: {cls.RESPONSE_MAX_AGE_SECONDS:g}초 (캡처 시점 기준)")
+        print(f"최근 채팅 문맥: {cls.CHAT_CONTEXT_MAX_AGE_SECONDS:g}초")
+        print(f"이전 발화 문맥: {cls.SPEECH_CONTEXT_MAX_AGE_SECONDS:g}초")
         print(f"응답 확률: {cls.RESPONSE_CHANCE}")
         print(f"스마트 응답: {'켜짐' if cls.SMART_RESPONSE else '꺼짐'}")
         print(f"응답 모드: {cls.RESPONSE_MODE}")

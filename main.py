@@ -6,7 +6,6 @@ warnings.simplefilter("ignore", ResourceWarning)
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 import os
-import re
 import time
 import signal
 import sys
@@ -23,6 +22,7 @@ from chat_reader import ChatReader, extract_channel_id
 from memory.memory_store import MemoryStore
 from memory.memory_manager import MemoryManager
 from core_logic import approval_action
+from response_pipeline import ResponsePipeline, ResponseCandidate, SpeechObservation, SpeechContext
 
 
 class ChzzkVoiceBot:
@@ -31,8 +31,8 @@ class ChzzkVoiceBot:
     파이프라인 (각 단계가 독립 스레드로 동작):
     1. AudioCapture 스레드: 시스템 오디오 루프백 → audio_queue
     2. ASR Worker 스레드: audio_queue → 음성인식 → speech_queue
-    3. LLM Worker 스레드: speech_queue → 응답 생성 → response_queue
-    4. Main 스레드: response_queue → 승인/전송/메모리
+    3. LLM Worker 스레드: speech_queue → 응답 생성 → ResponsePipeline
+    4. Main 스레드: 최신 제안 → 승인/전송/실제 전송 기록
     5. ChatReader 스레드: WebSocket → 실시간 채팅 수집
     """
 
@@ -50,8 +50,11 @@ class ChzzkVoiceBot:
         self.memory_manager: MemoryManager | None = None
 
         # 파이프라인 큐
-        self.speech_queue = queue.Queue()    # ASR → LLM
-        self.response_queue = queue.Queue()  # LLM → Main
+        self.speech_queue = queue.Queue(maxsize=1)  # latest ASR target only
+        self.pipeline = ResponsePipeline(mode=Config.RESPONSE_MODE,
+            max_age_seconds=Config.RESPONSE_MAX_AGE_SECONDS,
+            cooldown_seconds=Config.RESPONSE_COOLDOWN)
+        self.speech_context = SpeechContext(max_age_seconds=Config.SPEECH_CONTEXT_MAX_AGE_SECONDS)
 
         # 스레드 제어
         self._stop_event = threading.Event()
@@ -67,7 +70,6 @@ class ChzzkVoiceBot:
 
         self.use_mock = use_mock
         self.auto_send = auto_send
-        self.response_mode = Config.RESPONSE_MODE  # "ai" or "mimic"
         self._warmup_end_time = 0  # start()에서 설정
 
         self.stats = {
@@ -75,6 +77,10 @@ class ChzzkVoiceBot:
             "sent_messages": 0,
             "start_time": None
         }
+
+    @property
+    def response_mode(self):
+        return self.pipeline.mode
 
     def initialize(self):
         """초기화"""
@@ -177,13 +183,11 @@ class ChzzkVoiceBot:
         self._stop_event.clear()
 
         # 워밍업 설정
-        self._warmup_announced = False
         if Config.WARMUP_SECONDS > 0:
             self._warmup_end_time = time.time() + Config.WARMUP_SECONDS
             print(f"  [워밍업] {Config.WARMUP_SECONDS}초 동안 관찰 모드...")
         else:
             self._warmup_end_time = 0
-            self._warmup_announced = True
 
         # 오디오 캡처 시작 (기존 스레드)
         assert self.audio_capture is not None
@@ -239,7 +243,7 @@ class ChzzkVoiceBot:
         text_clean = text.strip().lower()
 
         # 1차: 도네이션 메시지와 비교 (on_donation 이벤트로 수집)
-        donations = self.chat_reader.get_recent_donations(20)
+        donations = self.chat_reader.get_recent_donations(20, max_age_seconds=20)
         for msg in donations:
             donate_text = msg["content"].strip().lower()
             if len(donate_text) < 3:
@@ -257,7 +261,7 @@ class ChzzkVoiceBot:
                 return True
 
         # 2차: 일반 채팅과도 비교 (도네가 채팅에도 표시되는 경우)
-        recent = self.chat_reader.get_recent_messages(20)
+        recent = self.chat_reader.get_recent_messages(20, max_age_seconds=20)
         for msg in recent:
             chat_text = msg["content"].strip().lower()
             if len(chat_text) < 5:
@@ -299,11 +303,9 @@ class ChzzkVoiceBot:
             return False
         # 같은 문자 반복 (ㅋㅋㅋ, ㅎㅎ, ??, ..)
         if len(set(text)) == 1 and len(text) >= 2:
-            return True
+            return text[0] in "ㅋㅎㅠㅜ?!"
         # 짧은 자모 (2~3자): ㅇㅇ, ㄷㄷ, ㄹㅇ, ㅇㅈ
-        if len(text) <= 3 and re.fullmatch(r'[ㄱ-ㅎㅏ-ㅣ]+', text):
-            return True
-        return False
+        return text in {"ㅇㅇ", "ㄷㄷ", "ㄹㅇ", "ㅇㅈ"}
 
     @staticmethod
     def _reaction_type(text: str) -> str:
@@ -321,10 +323,10 @@ class ChzzkVoiceBot:
 
         # 같은 종류 반응 쿨다운 체크 (연속 도배 방지)
         last_wave = self._last_reaction_wave_time.get(target_type, 0)
-        if time.time() - last_wave < self._reaction_wave_cooldown:
+        if time.monotonic() - last_wave < self._reaction_wave_cooldown:
             return False
 
-        recent = self.chat_reader.get_recent_messages(window)
+        recent = self.chat_reader.get_recent_messages(window, max_age_seconds=Config.CHAT_CONTEXT_MAX_AGE_SECONDS)
         count = sum(
             1 for m in recent
             if self._is_simple_reaction(m["content"])
@@ -336,7 +338,7 @@ class ChzzkVoiceBot:
     def _mark_reaction_wave_sent(self, target: str):
         """반응 따라하기 전송 후 쿨다운 기록"""
         target_type = self._reaction_type(target)
-        self._last_reaction_wave_time[target_type] = time.time()
+        self._last_reaction_wave_time[target_type] = time.monotonic()
 
     def _cycle_mode(self):
         """모드 순환: ai → hybrid → mimic → ai"""
@@ -344,73 +346,49 @@ class ChzzkVoiceBot:
         mode_labels = {"ai": "AI", "hybrid": "하이브리드", "mimic": "따라하기"}
         idx = mode_order.index(self.response_mode) if self.response_mode in mode_order else 0
         old = self.response_mode
-        self.response_mode = mode_order[(idx + 1) % len(mode_order)]
+        self.pipeline.switch_mode(mode_order[(idx + 1) % len(mode_order)])
         print(f"\n  [모드] {mode_labels.get(old, old)} → {mode_labels.get(self.response_mode, self.response_mode)}")
 
     def _get_mimic_response(self):
-        """따라하기 모드: 가장 최근 채팅 메시지를 반환"""
+        """Return the latest fresh message with its original timestamp."""
         if not self.chat_reader:
             return None
-        recent = self.chat_reader.get_recent_messages(1)
+        recent = self.chat_reader.get_recent_messages(1, max_age_seconds=Config.CHAT_CONTEXT_MAX_AGE_SECONDS)
         if not recent:
             return None
-        return recent[-1]["content"]
+        return recent[-1]
 
     def _mimic_worker(self):
-        """따라하기 워커 스레드: 채팅 모니터링 → 최근 채팅 복사 → response_queue"""
-        last_seen = None  # 마지막으로 본 채팅 (중복 방지)
+        """Offer fresh crowd reactions through the same send policy as AI."""
+        last_seen = None
         while not self._stop_event.is_set():
             try:
                 if self.response_mode not in ("mimic", "hybrid"):
-                    time.sleep(0.5)
+                    self._stop_event.wait(0.5)
                     continue
-
-                # 워밍업 체크
                 if self._warmup_end_time and time.time() < self._warmup_end_time:
-                    time.sleep(1)
+                    self._stop_event.wait(1)
                     continue
-
-                # 쿨다운 체크
-                with self._cooldown_lock:
-                    current_time = time.time()
-                    if current_time - self.last_response_time < Config.RESPONSE_COOLDOWN:
-                        time.sleep(1)
-                        continue
-
-                # 이미 대기 중인 응답이 있으면 스킵
-                if not self.response_queue.empty():
-                    time.sleep(1)
-                    continue
-
-                # 최근 채팅 가져오기 (단순 반응만 복사)
-                response = self._get_mimic_response()
-                if not response or response == last_seen:
-                    time.sleep(1)
-                    continue
-
-                if not self._is_simple_reaction(response):
-                    time.sleep(1)
-                    continue
-
-                # 최근 10개 중 반응이 4개 이상일 때만 따라감 (분위기 타기)
-                if not self._is_reaction_wave(response):
-                    last_seen = response
-                    time.sleep(1)
-                    continue
-
-                self._mark_reaction_wave_sent(response)
-                last_seen = response
-                self.stats["processed_speeches"] += 1
-                response = self._vary_reaction(response)
-                print(f"[따라하기] 채팅 복사: {response}")
-                self.response_queue.put(("(따라하기)", response, ""))
-
-                time.sleep(2)  # 너무 빠르게 복사하지 않도록
-
+                generation = self.pipeline.generation
+                message = self._get_mimic_response()
+                if message:
+                    identity = (message.get("time"), message.get("nickname"), message["content"])
+                    response = message["content"]
+                    if identity != last_seen and self._is_simple_reaction(response) and self._is_reaction_wave(response):
+                        # Chat timestamps are wall time; preserve their age when
+                        # crossing into the monotonic response policy.
+                        age = time.time() - message["time"]
+                        candidate = ResponseCandidate("(채팅 반응)", self._vary_reaction(response), "",
+                            time.monotonic() - age, generation, kind="mimic")
+                        if self.pipeline.can_send(candidate) and self.pipeline.submit(candidate):
+                            last_seen = identity
+                            self.stats["processed_speeches"] += 1
+                            print(f"[따라하기] 제안: {candidate.text}")
+                self._stop_event.wait(1)
             except Exception as e:
                 if not self._stop_event.is_set():
                     print(f"\n[따라하기] 오류: {e}")
-                    time.sleep(1)
+                    self._stop_event.wait(1)
 
     def _asr_worker(self):
         """ASR 워커 스레드: 오디오 → 음성인식 → speech_queue"""
@@ -418,9 +396,11 @@ class ChzzkVoiceBot:
         while not self._stop_event.is_set():
             try:
                 # 1. 오디오 청크 수집
-                audio_data = self.audio_capture.get_audio_chunk(timeout=1.0)
-                if audio_data is None:
+                generation = self.pipeline.generation
+                captured = self.audio_capture.get_audio_chunk(timeout=1.0, with_timestamp=True)
+                if captured is None:
                     continue
+                audio_data, observed_at = captured
 
                 # 2. 소리 감지
                 if not self.audio_capture.is_speech_present(audio_data):
@@ -446,15 +426,29 @@ class ChzzkVoiceBot:
                     continue
 
                 # 6. speech_queue에 전달
-                self.speech_queue.put(text)
+                self._observe_speech(SpeechObservation(text, observed_at, generation))
 
             except Exception as e:
                 if not self._stop_event.is_set():
                     print(f"\n[ASR] 오류: {e}")
                     time.sleep(1)
 
+    def _observe_speech(self, observation):
+        """Retain surrounding speech even when its response target is skipped."""
+        if self._stop_event.is_set() or observation.generation != self.pipeline.generation:
+            return
+        self.speech_context.observe(observation)
+        try:
+            self.speech_queue.put_nowait(observation)
+        except queue.Full:
+            try:
+                self.speech_queue.get_nowait()
+            except queue.Empty:
+                pass
+            self.speech_queue.put_nowait(observation)
+
     def _drain_speech_queue(self):
-        """speech_queue에서 가장 최신 텍스트만 가져오고 나머지는 버림"""
+        """Return the latest observation; earlier speech stays in SpeechContext."""
         text = self.speech_queue.get(timeout=1.0)
         skipped = 0
         while not self.speech_queue.empty():
@@ -464,161 +458,115 @@ class ChzzkVoiceBot:
             except queue.Empty:
                 break
         if skipped > 0:
-            print(f"[LLM] {skipped}개 이전 발화 스킵, 최신 처리: {text[:20]}")
+            print(f"[LLM] {skipped}개 이전 발화 스킵, 최신 처리: {text.text[:20]}")
         return text
 
+    def _generate_candidate(self, observation):
+        """Generate a draft from a fresh observation, retaining prior context."""
+        text = observation.text
+        if not self.pipeline.accepts(observation.observed_at, observation.generation):
+            return None
+        if self._warmup_end_time and time.time() < self._warmup_end_time:
+            return None
+        chat_rate = self.chat_reader.get_chat_rate(30) if self.chat_reader else 0
+        cooldown = Config.RESPONSE_COOLDOWN * (3 if chat_rate > 20 else 2 if chat_rate > 10 else 1)
+        with self._cooldown_lock:
+            if self.last_response_time and time.monotonic() - self.last_response_time < cooldown:
+                return None
+        if Config.RESPONSE_CHANCE < 1.0 and random.random() > Config.RESPONSE_CHANCE:
+            return None
+        chat_context = self.chat_reader.get_chat_context(10, filter_reactions=True,
+            max_age_seconds=Config.CHAT_CONTEXT_MAX_AGE_SECONDS) if self.chat_reader else ""
+        if Config.SMART_RESPONSE and not self.llm_handler.should_respond(text, chat_context):
+            return None
+        # The optional judge is another model call; it must not renew the input's age.
+        if not self.pipeline.accepts(observation.observed_at, observation.generation):
+            return None
+        self.stats["processed_speeches"] += 1
+        response = self.llm_handler.generate_response(
+            text, chat_context,
+            streamer_memory=self.streamer_memory.get_facts_as_prompt(),
+            chat_memory=self.chat_memory.get_facts_as_prompt(),
+            my_chat_memory=self.my_chat_memory.get_facts_as_prompt(),
+            speech_context=self.speech_context.recent(observation),
+        )
+        if not response:
+            print("[LLM] 응답 생략 또는 생성 실패")
+            return None
+        if self._is_simple_reaction(response):
+            return None
+        candidate = ResponseCandidate(text, response, chat_context,
+            observation.observed_at, observation.generation)
+        if not self.pipeline.is_current(candidate):
+            print("[LLM] 오래되었거나 모드가 바뀐 제안은 버렸어요.")
+            return None
+        return candidate
+
     def _llm_worker(self):
-        """LLM 워커 스레드: speech_queue → LLM 응답 → response_queue"""
-        assert self.llm_handler is not None
-        assert self.streamer_memory is not None
-        assert self.chat_memory is not None
-        assert self.my_chat_memory is not None
+        """Latest ASR target to a bounded, shared AI/reaction proposal slot."""
         while not self._stop_event.is_set():
             try:
-                # 1. 최신 음성 인식 결과만 가져오기 (오래된 것 버림)
-                try:
-                    text = self._drain_speech_queue()
-                except queue.Empty:
-                    continue
-
-                # 2. 워밍업 체크
-                if self._warmup_end_time and time.time() < self._warmup_end_time:
-                    remaining = int(self._warmup_end_time - time.time())
-                    print(f"[워밍업] 관찰 중 ({remaining}초 남음) - 스킵: {text[:20]}")
-                    continue
-
-                if not self._warmup_announced:
-                    self._warmup_announced = True
-                    print("\n[워밍업] 관찰 완료! 응답 시작합니다.\n")
-
-                # 3. 짧은 발화 필터 (중얼거림, 짧은 반응은 시청자가 반응 안 함)
-                if len(text.strip()) < 15:
-                    print(f"[LLM] 짧은 발화 스킵 ({len(text.strip())}자): {text}")
-                    continue
-
-                # 3. 따라하기 전용 모드면 스킵 (mimic_worker가 처리)
-                if self.response_mode == "mimic":
-                    continue
-
-                # 4. 동적 쿨다운 (채팅 활발하면 LLM 덜 응답, 조용하면 더 응답)
-                chat_rate = 0
-                if self.chat_reader:
-                    chat_rate = self.chat_reader.get_chat_rate(30)
-
-                if chat_rate > 20:
-                    # 채팅 활발 (분당 20개+): 하이브리드에 맡기고 LLM은 쉼
-                    cooldown = Config.RESPONSE_COOLDOWN * 3
-                elif chat_rate > 10:
-                    # 채팅 보통 (분당 10~20개): 가끔 응답
-                    cooldown = Config.RESPONSE_COOLDOWN * 2
-                else:
-                    # 채팅 조용 (분당 10개 미만): 적극 응답
-                    cooldown = Config.RESPONSE_COOLDOWN
-
-                with self._cooldown_lock:
-                    current_time = time.time()
-                    if current_time - self.last_response_time < cooldown:
-                        remaining = cooldown - (current_time - self.last_response_time)
-                        print(f"[LLM] 쿨다운 ({remaining:.0f}초, 채팅 {chat_rate:.0f}/분) - 스킵")
-                        continue
-
-                # 5. 응답 확률 체크
-                if Config.RESPONSE_CHANCE < 1.0 and random.random() > Config.RESPONSE_CHANCE:
-                    print(f"[LLM] 확률 스킵 ({Config.RESPONSE_CHANCE:.0%}): {text[:20]}")
-                    continue
-
-                self.stats["processed_speeches"] += 1
-
-                # 6. 채팅 컨텍스트 가져오기 (단순 반응 제외 → LLM이 ㅋㅋ만 생성하는 것 방지)
-                chat_context = ""
-                if self.chat_reader:
-                    chat_context = self.chat_reader.get_chat_context(10, filter_reactions=True)
-                    if chat_context != "(채팅 없음)":
-                        print(f"[LLM] 채팅 컨텍스트: {len(self.chat_reader.messages)}개")
-
-                # 7. 스마트 응답
-                if Config.SMART_RESPONSE:
-                    if not self.llm_handler.should_respond(text, chat_context):
-                        print(f"[LLM] 스마트 스킵: {text[:30]}")
-                        continue
-
-                # 8. LLM 응답 생성
-                print("[LLM] 응답 생성 중...")
-                response = self.llm_handler.generate_response(
-                    text, chat_context,
-                    streamer_memory=self.streamer_memory.get_facts_as_prompt(),
-                    chat_memory=self.chat_memory.get_facts_as_prompt(),
-                    my_chat_memory=self.my_chat_memory.get_facts_as_prompt()
-                )
-                if not response:
-                    print("[LLM] 응답 생성 실패")
-                    continue
-
-                # LLM이 단순 반응만 생성하면 스킵 (mimic이 처리)
-                if self._is_simple_reaction(response):
-                    print(f"[LLM] 단순 반응 스킵: {response}")
-                    continue
-
-                # hybrid 모드: LLM 응답은 로그만 (mimic_worker가 전송 담당)
-                if self.response_mode == "hybrid":
-                    print(f"[LLM 참고] {response}")
-                    continue
-
-                print(f"[LLM] 응답: {response}")
-
-                # 7. response_queue에 전달
-                self.response_queue.put((text, response, chat_context))
-
-            except Exception as e:
+                observation = self._drain_speech_queue()
+                candidate = self._generate_candidate(observation)
+                if candidate and self.pipeline.submit(candidate):
+                    print(f"[LLM] 제안: {candidate.text}")
+            except queue.Empty:
+                continue
+            except Exception as error:
                 if not self._stop_event.is_set():
-                    print(f"\n[LLM] 오류: {e}")
-                    time.sleep(1)
+                    print(f"[LLM] 오류: {error}")
+                    self._stop_event.wait(1)
+
+    def _process_candidate(self, candidate):
+        """Approve, revalidate and record only the message actually sent."""
+        if self._stop_event.is_set() or not self.pipeline.can_send(candidate):
+            print("[응답] 오래된 제안 또는 전송 간격 미충족: 건너뜀")
+            return False
+        response = candidate.text
+        if not self.auto_send:
+            mode_labels = {"ai": "AI", "mimic": "따라하기", "hybrid": "하이브리드"}
+            mode_label = mode_labels.get(self.response_mode, self.response_mode)
+            choice = input(f"  [{mode_label}] [{response}] Enter=전송 / s=스킵 / e=수정 / m=모드전환: ").strip().lower()
+            action = approval_action(choice)
+            if action == "mode":
+                self._cycle_mode()
+                return False
+            if action == "skip":
+                return False
+            if action == "edit":
+                response = input("  수정 메시지: ").strip()
+        response = self.llm_handler.validate_response(response)
+        # Approval and editing can take a long time. Neither makes the original
+        # moment new again, and all response paths use the same final guard.
+        if not response or self._stop_event.is_set() or not self.pipeline.can_send(candidate):
+            print("[응답] 만료·중복·금칙어 또는 전송 간격으로 건너뛰었어요.")
+            return False
+        if not self.chat_sender.send_message(response):
+            return False
+        self.pipeline.record_sent(candidate)
+        self.llm_handler.record_sent_response(candidate.speech if candidate.kind == "ai" else "", response)
+        self.stats["sent_messages"] += 1
+        with self._cooldown_lock:
+            self.last_response_time = time.monotonic()
+        if candidate.kind == "mimic":
+            self._mark_reaction_wave_sent(candidate.text)
+        # A crowd reaction is not a streamer utterance. Don't teach fabricated
+        # streamer facts from the marker used for a reaction proposal.
+        if candidate.kind == "ai":
+            self.memory_manager.record_interaction(candidate.speech, response, candidate.chat_context)
+        return True
 
     def _response_handler(self):
-        """메인 스레드: response_queue → 승인/전송/메모리"""
-        assert self.memory_manager is not None
+        """Consume one proposal at a time; waiting proposals are coalesced."""
         while not self._stop_event.is_set():
             try:
-                # 1. 응답 대기
-                try:
-                    text, response, chat_context = self.response_queue.get(timeout=1.0)
-                except queue.Empty:
-                    continue
-
-                # 2. 채팅 전송 (수동 승인 or 자동)
-                if self.auto_send:
-                    success = self.chat_sender.send_message(response)
-                else:
-                    mode_labels = {"ai": "AI", "mimic": "따라하기", "hybrid": "하이브리드"}
-                    mode_label = mode_labels.get(self.response_mode, self.response_mode)
-                    choice = input(f"  [{mode_label}] [{response}] Enter=전송 / s=스킵 / e=수정 / m=모드전환: ").strip().lower()
-                    action = approval_action(choice)
-                    if action == 'mode':
-                        self._cycle_mode()
-                        continue
-                    elif action == 'skip':
-                        print("  스킵됨")
-                        continue
-                    elif action == 'edit':
-                        new_text = input("  수정 메시지: ").strip()
-                        if not new_text:
-                            print("  스킵됨")
-                            continue
-                        response = new_text
-                    success = self.chat_sender.send_message(response)
-
-                if success:
-                    self.stats["sent_messages"] += 1
-                    with self._cooldown_lock:
-                        self.last_response_time = time.time()
-                    self.memory_manager.record_interaction(
-                        text, response, chat_context
-                    )
-
-            except Exception as e:
+                candidate = self.pipeline.take(timeout=1.0)
+                if candidate is not None:
+                    self._process_candidate(candidate)
+            except Exception as error:
                 if not self._stop_event.is_set():
-                    print(f"\n오류: {e}")
-                    time.sleep(1)
+                    print(f"[응답] 오류: {error}")
+                    self._stop_event.wait(1)
 
     def _key_listener(self):
         """자동 모드용 키 입력 리스너 (m키로 모드 전환)"""
@@ -636,13 +584,7 @@ class ChzzkVoiceBot:
     def stop(self):
         """종료"""
         self._stop_event.set()
-
-        # 메모리 저장
-        if self.memory_manager:
-            print("메모리 저장 중...")
-            self.memory_manager.force_update()
-            self.memory_manager.save_all()
-            print("메모리 저장 완료")
+        self.pipeline.close()
 
         if self.audio_capture:
             self.audio_capture.stop()
@@ -658,6 +600,13 @@ class ChzzkVoiceBot:
             self._llm_thread.join(timeout=3)
         if self._mimic_thread and self._mimic_thread.is_alive():
             self._mimic_thread.join(timeout=3)
+
+        # No new proposal can be accepted or sent after shutdown begins.
+        if self.memory_manager:
+            print("메모리 저장 중...")
+            self.memory_manager.force_update()
+            self.memory_manager.save_all()
+            print("메모리 저장 완료")
 
         if self.stats["start_time"]:
             runtime = time.time() - self.stats["start_time"]

@@ -6,7 +6,9 @@
 import time
 import asyncio
 import threading
+import math
 from collections import deque
+from datetime import datetime
 
 from chzzkpy.unofficial.chat import ChatClient, ChatMessage, DonationMessage
 from core_logic import ChatReconnectPolicy, extract_channel_id
@@ -86,7 +88,7 @@ class ChatReader:
                     self.messages.append({
                         "nickname": nickname,
                         "content": message.content,
-                        "time": time.time(),
+                        "time": self._message_time(message),
                     })
 
                 @client.event
@@ -97,6 +99,7 @@ class ChatReader:
                         self.donations.append({
                             "nickname": nickname,
                             "content": content,
+                            "time": self._message_time(message),
                         })
 
                 @client.event
@@ -149,32 +152,60 @@ class ChatReader:
         except Exception:
             pass
 
-    def get_recent_messages(self, count: int = 10) -> list[dict]:
-        """최근 채팅 메시지 반환"""
-        messages = list(self.messages)
-        return messages[-count:]
+    @staticmethod
+    def _message_time(message):
+        """chzzkpy의 msgTime/messageTime datetime을 epoch 초로 보관한다."""
+        if not hasattr(message, "time"):
+            # 구버전 메시지에 시각 필드가 없는 경우에만 수신 시각을 사용한다.
+            return time.time()
+        value = message.time
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            return None
+        try:
+            timestamp = value.timestamp()
+            return timestamp if math.isfinite(timestamp) else None
+        except (ValueError, OverflowError, OSError):
+            return None
 
-    def get_recent_donations(self, count: int = 10) -> list[dict]:
+    @staticmethod
+    def _fresh_entries(entries, max_age_seconds=None):
+        snapshot = list(entries)
+        if max_age_seconds is None:
+            return snapshot
+        if (isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, (int, float))
+                or not math.isfinite(max_age_seconds) or max_age_seconds < 0):
+            raise ValueError("max_age_seconds must be a finite non-negative number")
+        now = time.time()
+        return [entry for entry in snapshot
+                if isinstance(entry.get("time"), (int, float)) and not isinstance(entry["time"], bool)
+                and math.isfinite(entry["time"]) and 0 <= now - entry["time"] <= max_age_seconds]
+
+    def get_recent_messages(self, count: int = 10, *, max_age_seconds: float | None = None) -> list[dict]:
+        """최근 채팅 메시지 반환"""
+        messages = self._fresh_entries(self.messages, max_age_seconds)
+        return messages[-count:] if count > 0 else []
+
+    def get_recent_donations(self, count: int = 10, *, max_age_seconds: float | None = None) -> list[dict]:
         """최근 도네이션 메시지 반환"""
-        donations = list(self.donations)
-        return donations[-count:]
+        donations = self._fresh_entries(self.donations, max_age_seconds)
+        return donations[-count:] if count > 0 else []
 
     def get_chat_rate(self, window: int = 30) -> float:
         """최근 N초 동안의 채팅 속도 (메시지/분)"""
-        now = time.time()
-        cutoff = now - window
-        recent = [m for m in self.messages if m.get("time", 0) > cutoff]
+        recent = self._fresh_entries(self.messages, window)
         return len(recent) / (window / 60)
 
-    def get_chat_context(self, count: int = 10, filter_reactions: bool = False) -> str:
+    def get_chat_context(self, count: int = 10, filter_reactions: bool = False, *, max_age_seconds: float | None = None) -> str:
         """LLM 프롬프트용 채팅 컨텍스트 문자열 반환
 
         Args:
             count: 가져올 메시지 수
             filter_reactions: True이면 단순 반응(ㅋㅋ, ㅎㅎ 등) 제외
+            max_age_seconds: 지정하면 이 시간 안의 채팅만 사용 (초)
         """
-        messages = self.get_recent_messages(count * 2 if filter_reactions else count)
-        if not messages:
+        # 오래된 메시지와 단순 반응을 먼저 거른 뒤 결과 개수를 제한한다.
+        messages = self._fresh_entries(self.messages, max_age_seconds)
+        if not messages or count <= 0:
             return "(채팅 없음)"
 
         lines = []

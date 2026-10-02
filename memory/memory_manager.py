@@ -3,6 +3,7 @@ import json
 import time
 import threading
 from config import Config
+from memory.memory_store import validate_fact_texts
 
 
 class MemoryManager:
@@ -19,6 +20,10 @@ class MemoryManager:
         self.interaction_buffer = []
         self.chat_context_buffer = []
         self._buffer_lock = threading.Lock()
+        self._condition = threading.Condition(self._buffer_lock)
+        self._worker = None
+        self._requested_generation = 0
+        self._completed_generation = 0
         self.update_interval = 5
         self.interaction_count = 0
 
@@ -27,43 +32,76 @@ class MemoryManager:
 
     def record_interaction(self, streamer_speech, bot_response, chat_context=""):
         """상호작용 기록"""
-        with self._buffer_lock:
+        with self._condition:
             self.interaction_buffer.append({
-                "streamer": streamer_speech,
-                "bot": bot_response,
+                "streamer": str(streamer_speech or "")[:2000],
+                "bot": str(bot_response or "")[:500],
                 "time": time.time()
             })
             if chat_context:
-                self.chat_context_buffer.append(chat_context)
+                self.chat_context_buffer.append(str(chat_context)[:4000])
 
             if len(self.interaction_buffer) > 10:
                 self.interaction_buffer = self.interaction_buffer[-10:]
             if len(self.chat_context_buffer) > 5:
                 self.chat_context_buffer = self.chat_context_buffer[-5:]
 
-        self.interaction_count += 1
+            self.interaction_count += 1
+            if self.interaction_count % self.update_interval == 0:
+                self._request_update_locked(self.interaction_count)
 
-        if self.interaction_count % self.update_interval == 0:
-            thread = threading.Thread(target=self._update_all_memories, daemon=True)
-            thread.start()
+    def _request_update_locked(self, generation):
+        self._requested_generation = max(self._requested_generation, generation)
+        if self._worker is None and self._requested_generation > self._completed_generation:
+            worker = threading.Thread(target=self._update_worker, daemon=True)
+            self._worker = worker
+            try:
+                worker.start()
+            except Exception:
+                self._worker = None
+                raise
 
-    def _update_all_memories(self):
+    def _update_worker(self):
+        """Only one summary runs; requests arriving during it collapse to the latest snapshot."""
+        while True:
+            with self._condition:
+                if self._requested_generation <= self._completed_generation:
+                    self._worker = None
+                    self._condition.notify_all()
+                    return
+                generation = self.interaction_count
+                interactions = list(self.interaction_buffer)
+                chat_contexts = list(self.chat_context_buffer[-3:])
+            try:
+                self._update_all_memories(self._format_interactions(interactions), "\n---\n".join(chat_contexts))
+            except Exception as error:
+                # Failure keeps the last committed store contents and must not
+                # strand force_update waiters or block later generations.
+                print(f"[메모리] 업데이트 실패: {error}")
+            finally:
+                with self._condition:
+                    self._completed_generation = max(self._completed_generation, generation)
+                    self._condition.notify_all()
+
+    def _update_all_memories(self, interactions_text, chat_text):
         """모든 메모리 업데이트"""
         print("\n[메모리] 메모리 업데이트 중...")
 
-        interactions_text = self._format_interactions()
-        chat_text = self._format_chat_contexts()
-
-        self._update_streamer_memory(interactions_text)
-        self._update_chat_memory(chat_text)
-        self._update_my_chat_memory(interactions_text)
+        for update, text in [(self._update_streamer_memory, interactions_text),
+                             (self._update_chat_memory, chat_text),
+                             (self._update_my_chat_memory, interactions_text)]:
+            try:
+                update(text)
+            except Exception as error:
+                print(f"[메모리] 저장 실패: {error}")
 
         print("[메모리] 업데이트 완료")
 
-    def _format_interactions(self):
+    def _format_interactions(self, buffer_copy=None):
         """상호작용 버퍼를 텍스트로 변환"""
-        with self._buffer_lock:
-            buffer_copy = list(self.interaction_buffer)
+        if buffer_copy is None:
+            with self._buffer_lock:
+                buffer_copy = list(self.interaction_buffer)
         lines = []
         for item in buffer_copy:
             lines.append(f"스트리머: {item['streamer']}")
@@ -151,30 +189,31 @@ JSON 배열로만 응답하세요. 예: ["특징1", "특징2"]"""
 
     def _parse_json_array(self, text):
         """LLM 응답에서 JSON 배열 파싱"""
+        if not isinstance(text, str) or len(text) > 8192:
+            return None
         text = text.strip()
 
         # 마크다운 코드블록 제거
-        if text.startswith("```"):
+        if text.startswith("```") and text.endswith("```"):
             lines = text.split("\n")
             text = "\n".join(lines[1:-1])
 
-        # [ ... ] 추출
-        start = text.find("[")
-        end = text.rfind("]")
-        if start != -1 and end != -1:
-            try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError:
-                pass
-
-        # 폴백: 줄 단위 추출
-        lines = [l.strip().strip("-").strip() for l in text.split("\n") if l.strip()]
-        return lines[:5] if lines else None
+        try:
+            return validate_fact_texts(json.loads(text), max_facts=5)
+        except (ValueError, TypeError):
+            return None
 
     def force_update(self):
-        """강제 메모리 업데이트 (동기)"""
-        if self.interaction_buffer:
-            self._update_all_memories()
+        """Wait until a serialized update covers every interaction present at this call."""
+        with self._condition:
+            if not self.interaction_buffer:
+                return
+            if threading.current_thread() is self._worker:
+                raise RuntimeError("A memory worker cannot wait for itself")
+            target = self.interaction_count
+            self._request_update_locked(target)
+            while self._completed_generation < target:
+                self._condition.wait()
 
     def save_all(self):
         """모든 메모리를 디스크에 저장"""

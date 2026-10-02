@@ -1,6 +1,5 @@
 import logging
-import torch
-import numpy as np
+import re
 from config import Config
 
 # transformers의 "Setting pad_token_id to eos_token_id" 메시지 억제
@@ -29,6 +28,7 @@ class SpeechRecognizer:
         print("처음 실행 시 모델 다운로드로 시간이 걸릴 수 있습니다.")
 
         try:
+            import torch
             from qwen_asr import Qwen3ASRModel
 
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -63,6 +63,7 @@ class SpeechRecognizer:
             return None
 
         try:
+            import numpy as np
             # 오디오 데이터 전처리
             if len(audio_data.shape) > 1:
                 audio_data = audio_data.flatten()
@@ -116,27 +117,14 @@ class SpeechRecognizer:
 
         # 반복되는 짧은 소리 제외 (예: "아 아 아", "음 음 음")
         words = text.split()
-        if len(words) <= 3 and len(set(words)) == 1:
+        if len(words) >= 2 and len(set(words)) == 1 and words[0] in {"아", "어", "음", "으", "오"}:
             return False
 
-        # 인식 실패 시 자주 반환하는 패턴 제외
-        ignore_patterns = [
-            "자막",
-            "번역",
-            "구독",
-            "좋아요",
-            "알람",
-            "[",
-            "]",
-            "(",
-            ")",
-        ]
-
-        for pattern in ignore_patterns:
-            if pattern in text:
-                return False
-
-        return True
+        # Stage/noise annotations are not speech. Words such as '좋아요' or
+        # '자막' can be genuine speech and must not be removed by substring.
+        if re.fullmatch(r"\s*(?:\[[^\]]*\]|\([^)]*\))\s*", text):
+            return False
+        return bool(re.search(r"[가-힣a-zA-Z0-9]", text))
 
     def __del__(self):
         """소멸자"""

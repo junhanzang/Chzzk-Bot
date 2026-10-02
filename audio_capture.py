@@ -10,6 +10,7 @@ import numpy as np
 import queue
 import threading
 from config import Config
+from audio_buffer import RecentAudioBuffer
 
 import soundcard as sc  # type: ignore[import-untyped]
 SOUNDCARD_AVAILABLE = True
@@ -79,7 +80,11 @@ class AudioCapture:
         self.chunk_duration = chunk_duration or Config.AUDIO_CHUNK_DURATION
         self.chunk_size = int(self.sample_rate * self.chunk_duration)
 
-        self.audio_queue = queue.Queue()
+        # Keep at most one recent utterance instead of replaying an ASR backlog.
+        self.audio_queue = RecentAudioBuffer(
+            max_blocks=max(1, int(self.chunk_duration * 10)),
+            max_age_seconds=max(1.0, self.chunk_duration * 2),
+        )
         self.is_capturing = False
         self._thread = None
         self._recorder = None
@@ -130,15 +135,11 @@ class AudioCapture:
         if self._thread:
             self._thread.join(timeout=3)
 
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-            except queue.Empty:
-                break
+        self.audio_queue.clear()
 
         print("오디오 캡처 중지")
 
-    def get_audio_chunk(self, timeout=None):
+    def get_audio_chunk(self, timeout=None, *, with_timestamp=False):
         """오디오 청크 반환"""
         if not self.is_capturing:
             raise RuntimeError("오디오 캡처가 시작되지 않았습니다.")
@@ -146,10 +147,21 @@ class AudioCapture:
         audio_chunks = []
         total_samples = 0
         target_samples = self.chunk_size
+        captured_at = None
+        previous_at = None
 
-        while total_samples < target_samples:
+        while self.is_capturing and total_samples < target_samples:
             try:
-                chunk = self.audio_queue.get(timeout=timeout or 1.0)
+                block = self.audio_queue.get(timeout=timeout if timeout is not None else 1.0)
+                # A skipped backlog must not splice unrelated moments together.
+                if previous_at is not None and block.captured_at - previous_at > 0.5:
+                    audio_chunks = []
+                    total_samples = 0
+                    captured_at = None
+                chunk = block.data
+                if captured_at is None:
+                    captured_at = block.captured_at - len(chunk) / self.sample_rate
+                previous_at = block.captured_at
                 audio_chunks.append(chunk)
                 total_samples += len(chunk)
             except queue.Empty:
@@ -176,7 +188,7 @@ class AudioCapture:
             padding = np.zeros((target_samples - len(audio_data), audio_data.shape[1]))
             audio_data = np.concatenate([audio_data, padding], axis=0)
 
-        return audio_data
+        return (audio_data, captured_at) if with_timestamp else audio_data
 
     def is_speech_present(self, audio_data, threshold=0.002):
         """소리가 있는지 에너지 기반 검사"""
