@@ -11,7 +11,7 @@ Python 봇의 기존 `v1.0.x` 릴리스와 데스크 앱의 배포를 구분한�
 3. 합성 방송으로 RPC 녹화·MP4 디코딩을 검사한다. 실제 앱·브라우저를 열지 않는다.
 4. Windows 설치 파일·ZIP과 Chrome 확장 ZIP을 생성하고 패키지 내부 파일을 검사한다.
 5. 배포 파일과 `SHA256SUMS.txt`를 Actions의 `chzzk-desk-distribution` 아티팩트에 14일간 보관한다.
-6. 별도 Linux 작업에서 Python core 테스트를 실행한다. GPU·음성 인식용 의존성은 설치하지 않는다.
+6. 별도 Linux 작업에서 `requirements-ci.txt`의 경량 의존성을 설치하고 Python 단위 테스트를 실행한다. GPU·음성 인식용 의존성은 설치하지 않는다.
 
 `.github/workflows/release.yml`은 `desk-v*` 태그 푸시에서 같은 CI를 실행한다. **모든 작업 성공 후** 이번 실행의 파일을 받아 체크섬을 확인하고 GitHub Releases에 시험 배포한다. 기존 Python 릴리스의 Latest 표시는 바꾸지 않는다. 태그·버전이 다르거나 릴리스 노트가 없으면 배포하지 않는다. 이미 있는 릴리스의 파일도 덮어쓰지 않는다.
 
@@ -38,6 +38,7 @@ Windows x64와 Node.js 22가 필요하다. 실제 앱 창은 실행하지 않는
 ```powershell
 npm ci --prefix desktop
 npm run check --prefix desktop
+python -m pip install -r requirements-ci.txt
 python -m pytest tests -q
 npm run test:browser-replay --prefix desktop
 npm run package --prefix browser-extension
@@ -45,7 +46,7 @@ npm run dist:win --prefix desktop
 node scripts/release-bundle.cjs pack
 ```
 
-`release/`에 이번 버전의 세 파일과 체크섬이 모인다. 이전 버전 파일이 남아 있으면 혼합 배포를 막기 위해 실패하므로 이전 산출물은 별도로 옮긴 뒤 다시 실행한다. 로컬 Python 테스트에는 pytest 8.x만 있으면 된다.
+`release/`에 이번 버전의 세 파일과 체크섬이 모인다. 이전 버전 파일이 남아 있으면 혼합 배포를 막기 위해 실패하므로 이전 산출물은 별도로 옮긴 뒤 다시 실행한다. 로컬 Python 테스트에는 `requirements-ci.txt`의 pytest·requests·python-dotenv가 필요하다. LLM 응답 테스트는 HTTP 요청을 모의 처리하므로 실제 계정이나 Ollama 서버는 필요하지 않다.
 
 ## 배포 범위
 
