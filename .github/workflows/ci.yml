@@ -55,9 +55,15 @@ jobs:
           retention-days: 14
 
   python:
-    name: Python bot unit tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    name: Python bot (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    env:
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,3 +74,16 @@ jobs:
       # Include mocked HTTP/config imports; no GPU, account or audio dependencies.
       - run: python -m pip install -r requirements-ci.txt
       - run: python -m pytest tests -q
+      - name: Verify entrypoint without third-party packages
+        run: python -S main.py --demo
+      - name: Build allowlisted bot source bundle
+        run: python build_dist.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: chzzk-bot-source
+          path: |
+            release/chzzk-bot-source.zip
+            release/chzzk-bot-source.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

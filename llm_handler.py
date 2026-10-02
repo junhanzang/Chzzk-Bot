@@ -91,23 +91,25 @@ class LLMHandler:
 
     def check_connection(self):
         """Ollama 서버 연결 확인"""
+        from bot.diagnostics import model_is_available
         try:
             response = requests.get(f"{self.host}/api/tags", timeout=5)
             if response.status_code == 200:
                 models = response.json().get('models', [])
-                model_names = [m['name'] for m in models]
-
-                if self.model_name in model_names or any(self.model_name in name for name in model_names):
+                if not isinstance(models, list):
+                    print("Ollama 모델 목록 형식이 올바르지 않습니다.")
+                    return False
+                if model_is_available(self.model_name, models):
                     print(f"Ollama 연결 성공 (모델: {self.model_name})")
                     return True
                 else:
                     print(f"모델 '{self.model_name}'을 찾을 수 없습니다.")
-                    print(f"사용 가능한 모델: {', '.join(model_names)}")
+                    print("ollama list로 모델 이름과 태그를 확인하세요.")
                     return False
             return False
-        except requests.exceptions.RequestException as e:
-            print(f"Ollama 서버 연결 실패: {e}")
-            print(f"Ollama가 실행 중인지 확인하세요: {self.host}")
+        except (requests.exceptions.RequestException, ValueError, TypeError, AttributeError):
+            print("Ollama 연결 또는 모델 목록 확인에 실패했습니다.")
+            print("python main.py --doctor로 설정과 서버 상태를 확인하세요.")
             return False
 
     def add_to_context(self, role, text):

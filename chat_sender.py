@@ -1,363 +1,339 @@
-"""치지직 채팅 전송 모듈 (chzzkpy unofficial ChatClient 사용)
-
-네이버 로그인 쿠키(NID_AUT, NID_SES)로 인증하여
-WebSocket을 통해 채팅 메시지를 전송합니다.
-"""
+"""Authenticated chat delivery with reconnects and cancellable shutdown."""
 import asyncio
 import os
-import time
 import threading
-from typing import Any
+import time
+from concurrent.futures import TimeoutError as FutureTimeout
 
 from chzzkpy.unofficial.chat import ChatClient
 
+from bot.connection import cancel_connection, close_client, close_loop, is_authentication_error
 from config import Config
+from core_logic import ChatReconnectPolicy
 
 ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")
 
 
+def _guard_allows_send(is_current):
+    if is_current is None:
+        return True
+    try:
+        return bool(is_current())
+    except Exception:
+        # A failed freshness check must never grant permission to send.
+        return False
+
+
 class ChatSender:
-    """치지직 채팅 전송 클래스 (쿠키 인증)
+    """Own one socket worker; never retry a message with an uncertain outcome."""
 
-    동작 방식:
-    1. 네이버 쿠키(NID_AUT, NID_SES)로 ChatClient 생성
-    2. WebSocket 연결 후 send_chat()으로 메시지 전송
-    """
-
-    def __init__(self):
-        self._client: Any = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._thread: threading.Thread | None = None
-        self._lock = threading.Lock()  # loop/client 접근 동기화
-        self.is_authenticated = False
-        self._running = False
-        self.last_send_time = 0
-        self._channel_id = ""
-        self._nid_aut = ""
-        self._nid_ses = ""
-
-    @staticmethod
-    def _login_via_browser() -> tuple[str, str]:
-        """브라우저로 네이버 로그인 → 쿠키 자동 캡처"""
-        try:
-            import undetected_chromedriver as uc
-        except ImportError:
-            print("undetected-chromedriver가 필요합니다: pip install undetected-chromedriver")
-            return "", ""
-
-        print("\n네이버 로그인 창을 여는 중...")
-        print("로그인 완료 후 자동으로 쿠키를 가져옵니다.\n")
-
-        # Chrome 버전 자동 감지 (PowerShell로 exe 파일 버전 읽기)
-        chrome_path = uc.find_chrome_executable()
-        ver = None
-        import subprocess
-        try:
-            out = subprocess.check_output(
-                ["powershell", "-Command",
-                 f"(Get-Item '{chrome_path}').VersionInfo.FileVersion"],
-                text=True,
-            )
-            ver = int(out.strip().split(".")[0])
-            print(f"Chrome {ver} 감지됨")
-        except Exception:
-            pass
-
-        import tempfile
-        tmp_profile = os.path.join(tempfile.gettempdir(), "chzzk_bot_chrome")
-        os.makedirs(tmp_profile, exist_ok=True)
-        driver = uc.Chrome(
-            headless=False,
-            version_main=ver,
-            user_data_dir=tmp_profile,
-        )
-        nid_aut = ""
-        nid_ses = ""
-
-        try:
-            # 1단계: 네이버 로그인 페이지로 이동
-            driver.get("https://nid.naver.com/nidlogin.login?url=https://chzzk.naver.com/")
-            time.sleep(2)
-
-            # 2단계: 로그인 완료 대기 (로그인 페이지를 벗어날 때까지)
-            from selenium.webdriver.support.ui import WebDriverWait
-            if "nidlogin" in driver.current_url:
-                print("네이버 로그인을 완료해주세요 (최대 3분 대기)...")
-                WebDriverWait(driver, 180).until(
-                    lambda d: "nidlogin" not in d.current_url
-                )
-
-            # 3단계: chzzk.naver.com으로 이동해서 쿠키 추출
-            driver.get("https://chzzk.naver.com/")
-            time.sleep(2)
-
-            cookies = driver.get_cookies()
-            for c in cookies:
-                if c["name"] == "NID_AUT":
-                    nid_aut = c["value"]
-                elif c["name"] == "NID_SES":
-                    nid_ses = c["value"]
-
-            if nid_aut and nid_ses:
-                print("로그인 성공! 쿠키를 가져왔습니다.")
-        except Exception as e:
-            print(f"로그인 실패: {e}")
-        finally:
-            driver.quit()
-
-        return nid_aut, nid_ses
-
-    @staticmethod
-    def _save_cookies_to_env(nid_aut: str, nid_ses: str):
-        """쿠키를 .env 파일에 저장 (다음 실행 시 자동 사용)"""
-        if not os.path.exists(ENV_FILE):
-            return
-        with open(ENV_FILE, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        new_lines = []
-        for line in lines:
-            if line.startswith("NID_AUT="):
-                new_lines.append(f"NID_AUT={nid_aut}\n")
-            elif line.startswith("NID_SES="):
-                new_lines.append(f"NID_SES={nid_ses}\n")
-            else:
-                new_lines.append(line)
-
-        with open(ENV_FILE, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-        print(".env에 쿠키 저장 완료 (다음부터 자동 로그인)")
-
-    def _try_connect(self, channel_id: str, nid_aut: str, nid_ses: str) -> bool:
-        """ChatClient WebSocket 연결 시도 (최대 20초 대기)"""
-        self._channel_id = channel_id
-        self._nid_aut = nid_aut
-        self._nid_ses = nid_ses
-
-        self._client = ChatClient(
-            channel_id=channel_id,
-            authorization_key=nid_aut,
-            session_key=nid_ses,
-        )
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(
-            target=self._run, name="ChatSender", daemon=True
-        )
-        self._thread.start()
-
-        # 연결 대기 (최대 20초)
-        for _ in range(200):
-            time.sleep(0.1)
-            if self._client.is_connected:
-                # user_id 없으면 쿠키 만료 (READ 모드로 연결된 것)
-                if not self._client.user_id:
-                    print("쿠키가 만료되었습니다. 재로그인이 필요합니다.")
-                    self._running = False
-                    try:
-                        self._loop.run_until_complete(self._client.close())
-                    except Exception:
-                        pass
-                    return False
-                self.is_authenticated = True
-                print("채팅 전송 연결 성공!")
-                return True
-        return False
-
-    def authenticate(self, channel_id: str) -> bool:
-        """쿠키 인증 + WebSocket 연결
-
-        Args:
-            channel_id: 치지직 채널 ID (방송 URL에서 추출)
-        """
-        nid_aut = Config.NID_AUT
-        nid_ses = Config.NID_SES
-
-        # .env에 없으면 Selenium으로 로그인
-        if not nid_aut or not nid_ses:
-            nid_aut, nid_ses = self._login_via_browser()
-            if not nid_aut or not nid_ses:
-                print("로그인에 실패했습니다.")
-                return False
-            self._save_cookies_to_env(nid_aut, nid_ses)
-
-        # 1차 시도: 저장된 쿠키로 연결
-        if self._try_connect(channel_id, nid_aut, nid_ses):
-            return True
-
-        # 2차 시도: 쿠키 만료 가능성 → 재로그인
-        print("연결 실패. 쿠키가 만료되었을 수 있습니다. 재로그인 시도...")
-        self.is_authenticated = False
-        nid_aut, nid_ses = self._login_via_browser()
-        if not nid_aut or not nid_ses:
-            print("재로그인 실패")
-            return False
-        self._save_cookies_to_env(nid_aut, nid_ses)
-
-        if self._try_connect(channel_id, nid_aut, nid_ses):
-            return True
-
-        print("채팅 전송 연결 실패 (방송이 라이브 중인지 확인하세요)")
-        return False
-
-    def _register_sender_events(self, client, reset_delay):
-        """ChatClient에 이벤트 핸들러 등록"""
-        @client.event
-        async def on_connect():
-            reset_delay()
-
-    def _run(self):
-        """별도 스레드에서 ChatClient 실행 (자동 재연결)"""
-        assert self._loop is not None
-        asyncio.set_event_loop(self._loop)
-        retry_delay = 3
-        self._running = True
-
-        def reset_delay():
-            nonlocal retry_delay
-            retry_delay = 3
-
-        self._register_sender_events(self._client, reset_delay)
-
-        while self._running:
-            try:
-                self._loop.run_until_complete(self._client.start())
-            except Exception as e:
-                if not self._running:
-                    break
-                print(f"채팅 전송 연결 오류: {e} ({retry_delay}초 후 재연결...)")
-                # 클라이언트만 정리 (루프가 돌고 있으면 건너뜀)
-                if not self._loop.is_running():
-                    try:
-                        self._loop.run_until_complete(self._client.close())
-                    except Exception:
-                        pass
-                    try:
-                        self._loop.run_until_complete(asyncio.sleep(0.1))
-                    except Exception:
-                        pass
-                time.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 30)
-                # 같은 루프에서 새 클라이언트로 재연결
-                try:
-                    with self._lock:
-                        self._client = ChatClient(
-                            channel_id=self._channel_id,
-                            authorization_key=self._nid_aut,
-                            session_key=self._nid_ses,
-                        )
-                    self._register_sender_events(self._client, reset_delay)
-                except Exception:
-                    break
-        # 스레드 종료 시 루프 정리
-        try:
-            self._loop.close()
-        except Exception:
-            pass
-
-    def send_message(self, text: str, retry: int = 3) -> bool:
-        """채팅 메시지 전송"""
-        if not text or not text.strip():
-            return False
-
-        # lock으로 loop/client 안전하게 참조
-        with self._lock:
-            client = self._client
-            loop = self._loop
-
-        if not self.is_authenticated or not client or not loop:
-            print("채팅 전송이 연결되지 않았습니다.")
-            return False
-        if loop.is_closed():
-            print("채팅 전송이 연결되지 않았습니다. (루프 종료됨)")
-            return False
-
-        # 레이트 리밋 (최소 2초 간격)
-        current_time = time.time()
-        elapsed = current_time - self.last_send_time
-        if elapsed < 2.0:
-            time.sleep(2.0 - elapsed)
-
-        try:
-            future = asyncio.run_coroutine_threadsafe(
-                client.send_chat(text), loop
-            )
-            future.result(timeout=5)
-            self.last_send_time = time.time()
-            print(f"채팅 전송: {text}")
-            return True
-        except Exception as e:
-            msg = str(e) or type(e).__name__
-            print(f"채팅 전송 실패: {msg}")
-            return False
-
-    def is_connected(self) -> bool:
-        return self.is_authenticated and bool(
-            self._client and self._client.is_connected
-        )
-
-    def disconnect(self):
-        self._running = False
-        self.is_authenticated = False
-        with self._lock:
-            client = self._client
-            loop = self._loop
-        if client and loop and not loop.is_closed():
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    client.close(), loop
-                ).result(timeout=3)
-            except Exception:
-                pass
-        if self._thread:
-            self._thread.join(timeout=5)
-        print("채팅 전송 종료")
-
-
-class MockChatSender(ChatSender):
-    """테스트용 Mock"""
+    CONNECT_TIMEOUT = 20.0
+    SEND_TIMEOUT = 5.0
+    MIN_SEND_INTERVAL = 2.0
 
     def __init__(self):
         self._client = None
         self._loop = None
         self._thread = None
+        self._start_task = None
+        self._lock = threading.RLock()
+        self._send_lock = threading.Lock()
+        self._send_tasks = set()
+        self._stop_event = threading.Event()
+        self._ready_event = threading.Event()
         self.is_authenticated = False
-        self.last_send_time = 0
+        self._running = False
+        self.last_send_time = 0.0
+        self._last_send_monotonic = None
+        self._channel_id = ""
+        self._nid_aut = ""
+        self._nid_ses = ""
+        self.status = "idle"
+        self.last_error = ""
+
+    @staticmethod
+    def _login_via_browser() -> tuple[str, str]:
+        # Import browser dependencies only for an explicitly interactive run.
+        from bot.auth import login_via_browser
+        try:
+            return login_via_browser()
+        except Exception:
+            print("로그인 창을 열지 못했습니다. Chrome 설치 상태를 확인해주세요.")
+            return "", ""
+
+    @staticmethod
+    def _save_cookies_to_env(nid_aut: str, nid_ses: str):
+        from bot.setup import write_env_values
+        write_env_values(ENV_FILE, {"NID_AUT": nid_aut, "NID_SES": nid_ses})
+        print(".env에 쿠키 저장 완료 (다음부터 자동 로그인)")
+
+    def _remember_credentials(self, nid_aut, nid_ses):
+        try:
+            self._save_cookies_to_env(nid_aut, nid_ses)
+        except (OSError, ValueError):
+            # The current session remains usable even if its file is read-only.
+            print("로그인은 완료했지만 쿠키를 저장하지 못했습니다. 다음 실행에 다시 로그인해주세요.")
+
+    def _try_connect(self, channel_id: str, nid_aut: str, nid_ses: str) -> bool:
+        self.disconnect(quiet=True)
+        if self._thread and self._thread.is_alive():
+            self.last_error = "이전 연결이 종료되는 중입니다. 잠시 후 다시 시작해주세요."
+            return False
+        with self._lock:
+            self._channel_id, self._nid_aut, self._nid_ses = channel_id, nid_aut, nid_ses
+            self._stop_event.clear()
+            self._ready_event.clear()
+            self._running = True
+            self.status = "connecting"
+            self.last_error = ""
+            self._thread = threading.Thread(target=self._run, name="ChatSender", daemon=True)
+            self._thread.start()
+        self._ready_event.wait(self.CONNECT_TIMEOUT)
+        if self.is_connected():
+            print("채팅 전송 연결 성공!")
+            return True
+        if not self.last_error:
+            self.last_error = "채팅에 연결하지 못했습니다. 방송과 네트워크 상태를 확인해주세요."
+        self.disconnect(quiet=True)
+        return False
+
+    def authenticate(self, channel_id: str, *, interactive: bool = True) -> bool:
+        """Use saved cookies; only interactive runs can request browser login."""
+        nid_aut, nid_ses = Config.NID_AUT, Config.NID_SES
+        if not nid_aut or not nid_ses:
+            if not interactive:
+                self.status = "auth_required"
+                self.last_error = "저장된 로그인 정보가 없습니다. 대화형 실행에서 먼저 로그인해주세요."
+                print(self.last_error)
+                return False
+            nid_aut, nid_ses = self._login_via_browser()
+            if not nid_aut or not nid_ses:
+                self.status = "auth_required"
+                self.last_error = "로그인에 실패했습니다."
+                return False
+            self._remember_credentials(nid_aut, nid_ses)
+
+        if self._try_connect(channel_id, nid_aut, nid_ses):
+            return True
+        # Network outages and offline streams must not open a new login window.
+        if not interactive or self.status != "auth_required":
+            print(self.last_error)
+            return False
+        print("저장된 로그인이 만료되었습니다. 다시 로그인해주세요.")
+        nid_aut, nid_ses = self._login_via_browser()
+        if not nid_aut or not nid_ses:
+            return False
+        self._remember_credentials(nid_aut, nid_ses)
+        return self._try_connect(channel_id, nid_aut, nid_ses)
+
+    def _create_client(self):
+        return ChatClient(channel_id=self._channel_id, authorization_key=self._nid_aut,
+                          session_key=self._nid_ses)
+
+    def _register_sender_events(self, client, policy):
+        @client.event
+        async def on_connect():
+            with self._lock:
+                if self._client is not client or self._stop_event.is_set():
+                    return
+                if not client.user_id:
+                    self.is_authenticated = False
+                    self.status = "auth_required"
+                    self.last_error = "로그인이 만료되었습니다. 대화형 실행에서 다시 로그인해주세요."
+                    self._running = False
+                    self._stop_event.set()
+                    cancel_connection(self._loop, self._start_task)
+                else:
+                    policy.on_connected()
+                    self.is_authenticated = True
+                    self.status = "connected"
+                    self.last_error = ""
+                self._ready_event.set()
+
+        @client.event
+        async def on_disconnect():
+            with self._lock:
+                if self._client is client:
+                    self.is_authenticated = False
+                    if not self._stop_event.is_set():
+                        self.status = "reconnecting"
+
+    def _run(self):
+        policy = ChatReconnectPolicy(initial_delay=3.0, max_delay=30.0)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        with self._lock:
+            self._loop = loop
+        try:
+            while not self._stop_event.is_set():
+                client = None
+                try:
+                    client = self._create_client()
+                    with self._lock:
+                        self._client = client
+                        self.is_authenticated = False
+                    self._register_sender_events(client, policy)
+                    if self._stop_event.is_set():
+                        break
+                    task = loop.create_task(client.start())
+                    with self._lock:
+                        self._start_task = task
+                    if self._stop_event.is_set():
+                        task.cancel()
+                    loop.run_until_complete(task)
+                except asyncio.CancelledError:
+                    pass
+                except Exception as error:
+                    # Exceptions from network libraries may contain cookies/URLs.
+                    if is_authentication_error(error):
+                        self.status = "auth_required"
+                        self.last_error = "로그인이 만료되었습니다. 대화형 실행에서 다시 로그인해주세요."
+                        self._stop_event.set()
+                        self._ready_event.set()
+                    else:
+                        self.last_error = "채팅 연결이 끊겼습니다. 자동으로 다시 연결합니다."
+                finally:
+                    with self._lock:
+                        self.is_authenticated = False
+                        self._start_task = None
+                        if self._client is client:
+                            self._client = None
+                        pending_sends = tuple(self._send_tasks)
+                    for pending in pending_sends:
+                        pending.cancel()
+                    close_client(loop, client)
+                if self._stop_event.is_set():
+                    break
+                delay = policy.on_disconnected()
+                self.status = "reconnecting"
+                print(f"채팅 전송 연결 끊김 ({delay:.0f}초 후 재연결...)")
+                if self._stop_event.wait(delay):
+                    break
+                policy.on_retry()
+        finally:
+            close_loop(loop)
+            with self._lock:
+                self._loop = None
+                self._running = False
+                self.is_authenticated = False
+                if self.status != "auth_required":
+                    self.status = "stopped"
+                self._ready_event.set()
+
+    async def _send_if_current(self, client, text, is_current=None):
+        # Revalidate on the worker loop after scheduling, including reconnect races.
+        with self._lock:
+            if (self._client is not client or self._stop_event.is_set()
+                    or not self.is_authenticated or not client.is_connected):
+                return False
+            task = asyncio.current_task()
+            self._send_tasks.add(task)
+        try:
+            if not _guard_allows_send(is_current):
+                return False
+            await client.send_chat(text)
+            return True
+        finally:
+            with self._lock:
+                self._send_tasks.discard(task)
+
+    def send_message(self, text: str, retry: int = 3, *, is_current=None) -> bool:
+        """Send once, checking optional freshness after waiting and before I/O.
+
+        ``retry`` remains accepted for older callers, but is unused.
+        """
+        if not text or not text.strip() or not _guard_allows_send(is_current):
+            return False
+        with self._send_lock:
+            if not self.is_connected():
+                return False
+            if self._last_send_monotonic is not None:
+                remaining = self.MIN_SEND_INTERVAL - (time.monotonic() - self._last_send_monotonic)
+                if remaining > 0 and self._stop_event.wait(remaining):
+                    return False
+            if not _guard_allows_send(is_current):
+                return False
+            with self._lock:
+                client, loop = self._client, self._loop
+                if (not self.is_authenticated or self._stop_event.is_set() or not client
+                        or not client.is_connected or loop is None or loop.is_closed()
+                        or not loop.is_running()):
+                    return False
+            future = None
+            coroutine = self._send_if_current(client, text, is_current)
+            try:
+                future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+                if not future.result(timeout=self.SEND_TIMEOUT):
+                    return False
+                self.last_send_time = time.time()
+                self._last_send_monotonic = time.monotonic()
+                self.last_error = ""
+                print(f"채팅 전송: {text}")
+                return True
+            except FutureTimeout:
+                future.cancel()
+                # The server may already have received it. Do not duplicate it.
+                self._last_send_monotonic = time.monotonic()
+                self.last_error = "전송 확인 시간이 초과되어 취소했습니다. 같은 메시지는 자동 재전송하지 않습니다."
+            except Exception:
+                if future is not None:
+                    future.cancel()
+                else:
+                    coroutine.close()
+                self.last_error = "채팅을 전송하지 못했습니다. 연결 상태를 확인해주세요."
+            print(self.last_error)
+            return False
+
+    def is_connected(self) -> bool:
+        with self._lock:
+            return bool(self.is_authenticated and not self._stop_event.is_set()
+                        and self._client and self._client.is_connected)
+
+    def disconnect(self, *, quiet=False):
+        with self._lock:
+            self._running = False
+            self.is_authenticated = False
+            self._stop_event.set()
+            if self.status != "auth_required":
+                self.status = "stopping"
+            loop, task, thread = self._loop, self._start_task, self._thread
+        cancel_connection(loop, task)
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=5)
+        if (not thread or not thread.is_alive()) and self.status != "auth_required":
+            self.status = "stopped"
+        if not quiet:
+            print("채팅 전송 종료")
+
+
+class MockChatSender(ChatSender):
+    """Local output only; no credentials or network client is needed."""
+
+    def __init__(self):
+        super().__init__()
         print("MockChatSender 사용 중 (실제 메시지는 전송되지 않음)")
 
-    def authenticate(self, channel_id: str = "") -> bool:
-        print("Mock 인증 성공")
+    def authenticate(self, channel_id: str = "", *, interactive: bool = True) -> bool:
         self.is_authenticated = True
+        self._stop_event.clear()
+        self.status = "connected"
+        print("Mock 인증 성공")
         return True
 
-    def send_message(self, text: str, retry: int = 3) -> bool:
-        if not text or not text.strip():
+    def send_message(self, text: str, retry: int = 3, *, is_current=None) -> bool:
+        if (not self.is_authenticated or not text or not text.strip()
+                or not _guard_allows_send(is_current)):
             return False
         print(f"[MOCK 전송] {text}")
         self.last_send_time = time.time()
         return True
 
-    def disconnect(self):
+    def is_connected(self) -> bool:
+        return self.is_authenticated
+
+    def disconnect(self, *, quiet=False):
         self.is_authenticated = False
-        print("Mock 채팅 종료")
-
-
-if __name__ == "__main__":
-    import sys
-    use_mock = "--mock" in sys.argv
-
-    if use_mock:
-        sender = MockChatSender()
-        sender.authenticate()
-    else:
-        channel_url = input("방송 URL: ").strip()
-        cid = channel_url.rstrip("/").split("/")[-1]
-        sender = ChatSender()
-        if not sender.authenticate(cid):
-            sys.exit(1)
-
-    test_messages = ["안녕하세요!", "테스트 ㅎㅎ", "잘 되나요?"]
-    for msg in test_messages:
-        sender.send_message(msg)
-        time.sleep(2)
-
-    sender.disconnect()
+        self._stop_event.set()
+        self.status = "stopped"
+        if not quiet:
+            print("Mock 채팅 종료")

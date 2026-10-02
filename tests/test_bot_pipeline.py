@@ -36,7 +36,7 @@ def runtime(monkeypatch):
     bot.memory_manager = SimpleNamespace(record_interaction=lambda *args: records.append(args))
     memory = SimpleNamespace(get_facts_as_prompt=lambda: '')
     bot.streamer_memory = bot.chat_memory = bot.my_chat_memory = memory
-    bot.chat_sender = SimpleNamespace(send_message=lambda message: sent.append(message) is None)
+    bot.chat_sender = SimpleNamespace(send_message=lambda message, **kwargs: sent.append(message) is None)
     monkeypatch.setattr(module.Config, 'SMART_RESPONSE', False)
     monkeypatch.setattr(module.Config, 'RESPONSE_CHANCE', 1)
     monkeypatch.setattr(module.Config, 'RESPONSE_COOLDOWN', 10)
@@ -112,12 +112,31 @@ def test_expired_manual_approval_does_not_send(runtime, monkeypatch):
 
 def test_failed_send_does_not_reserve_dedup_or_cooldown(runtime):
     f = runtime
-    f.bot.chat_sender.send_message = lambda _: False
+    f.bot.chat_sender.send_message = lambda _, **kwargs: False
     draft = candidate(f)
     assert not f.bot._process_candidate(draft)
     assert f.bot.pipeline.can_send(draft)
     assert not f.bot.llm_handler.recent_responses
     assert not f.records
+
+
+@pytest.mark.parametrize('change', ['expire', 'mode', 'stop'])
+def test_sender_can_revalidate_after_its_rate_limit_wait(runtime, change):
+    f = runtime
+    def delayed_sender(text, *, is_current):
+        assert is_current()
+        if change == 'expire':
+            f.now[0] += 21
+        elif change == 'mode':
+            f.bot.pipeline.switch_mode('mimic')
+        else:
+            f.bot._stop_event.set()
+        assert not is_current()
+        return False
+    f.bot.chat_sender.send_message = delayed_sender
+    assert not f.bot._process_candidate(candidate(f))
+    assert not f.records and not f.bot.llm_handler.recent_responses
+    assert f.bot.metrics.snapshot()['send_failed'] == 1
 
 
 def test_ai_mimic_and_edits_share_final_guard_and_success_cooldown(runtime, monkeypatch):
@@ -158,7 +177,7 @@ def test_asr_keeps_capture_time_and_rejects_results_from_previous_mode(runtime, 
     def transcribe(_):
         f.now[0] = 108
         if mode_changes:
-            f.bot._cycle_mode()
+            f.bot.pipeline.switch_mode('ai')
         return '그다음은?'
     f.bot.audio_capture = SimpleNamespace(get_audio_chunk=capture, is_speech_present=lambda _: True)
     f.bot.speech_recognizer = SimpleNamespace(transcribe=transcribe, is_valid_speech=lambda _: True)

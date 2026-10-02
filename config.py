@@ -1,85 +1,66 @@
+"""Backward-compatible settings facade with explicit, safe validation."""
+
 import os
-from dotenv import load_dotenv
 
-from core_logic import parse_banned_words
-
-load_dotenv()
+from bot.settings import DEFAULTS, ENV_PATH, parse_settings, read_env_values
 
 
 class Config:
-    """애플리케이션 설정 관리"""
+    """Precedence: defaults < project .env < environment < CLI overrides."""
 
-    # 치지직 채널 설정
-    CHZZK_CHANNEL_ID = os.getenv("CHZZK_CHANNEL_ID")
-
-    # Ollama 설정
-    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:4b")
-    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
-
-    # LLM 생성 설정
-    LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "50"))
-    LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "2048"))
-
-    # ASR 설정
-    ASR_MODEL = os.getenv("ASR_MODEL", "Qwen/Qwen3-ASR-0.6B")
-
-    # 오디오 설정
-    AUDIO_SAMPLE_RATE = int(os.getenv("AUDIO_SAMPLE_RATE", "16000"))
-    AUDIO_CHUNK_DURATION = int(os.getenv("AUDIO_CHUNK_DURATION", "5"))
-
-    # 채팅 설정
-    MIN_SPEECH_LENGTH = int(os.getenv("MIN_SPEECH_LENGTH", "3"))
-    RESPONSE_COOLDOWN = int(os.getenv("RESPONSE_COOLDOWN", "10"))
-    RESPONSE_MAX_AGE_SECONDS = float(os.getenv("RESPONSE_MAX_AGE_SECONDS", "20"))
-    CHAT_CONTEXT_MAX_AGE_SECONDS = float(os.getenv("CHAT_CONTEXT_MAX_AGE_SECONDS", "30"))
-    SPEECH_CONTEXT_MAX_AGE_SECONDS = float(os.getenv("SPEECH_CONTEXT_MAX_AGE_SECONDS", "45"))
-    RESPONSE_CHANCE = float(os.getenv("RESPONSE_CHANCE", "1.0"))
-    SMART_RESPONSE = os.getenv("SMART_RESPONSE", "false").lower() == "true"
-    RESPONSE_MODE = os.getenv("RESPONSE_MODE", "hybrid")  # "ai", "mimic", "hybrid"
-    WARMUP_SECONDS = int(os.getenv("WARMUP_SECONDS", "0"))  # 시작 후 관찰만 하는 시간 (초)
-    BANNED_WORDS = parse_banned_words(os.getenv("BANNED_WORDS", ""))  # 쉼표로 구분
-
-    # 네이버 로그인 쿠키 (채팅 전송용)
-    NID_AUT = os.getenv("NID_AUT", "")
-    NID_SES = os.getenv("NID_SES", "")
+    _errors = []
+    _env_path = ENV_PATH
 
     @classmethod
-    def validate(cls):
-        """필수 설정값 검증"""
-        errors = []
+    def load(cls, *, overrides=None, env_path=None, environ=None):
+        cls._env_path = ENV_PATH if env_path is None else env_path
+        try:
+            raw = read_env_values(cls._env_path)
+            read_errors = []
+        except (OSError, UnicodeError):
+            raw = {}
+            read_errors = [".env 파일을 읽을 수 없습니다. 경로와 읽기 권한을 확인하세요."]
+        source = os.environ if environ is None else environ
+        raw.update({key: source[key] for key in DEFAULTS if key in source})
+        raw.update({key: value for key, value in (overrides or {}).items() if value is not None})
+        values, errors = parse_settings(raw)
+        for key, value in values.items():
+            setattr(cls, key, value)
+        cls._errors = read_errors + errors
+        return cls
 
-        if not cls.CHZZK_CHANNEL_ID:
-            errors.append("CHZZK_CHANNEL_ID가 설정되지 않았습니다.")
+    @classmethod
+    def validation_errors(cls, *, require_channel=True):
+        errors = list(cls._errors)
+        if require_channel and not cls.CHZZK_CHANNEL_ID and not any("CHZZK_CHANNEL_ID:" in error for error in errors):
+            errors.append("CHZZK_CHANNEL_ID: 채널을 설정하거나 --channel 방송URL을 지정하세요.")
+        return errors
 
+    @classmethod
+    def validate(cls, *, require_channel=True):
+        errors = cls.validation_errors(require_channel=require_channel)
         if errors:
-            error_message = "\n".join(errors)
-            raise ValueError(f"설정 오류:\n{error_message}\n\n.env 파일을 확인하세요.")
-
+            raise ValueError("설정 오류:\n- " + "\n- ".join(errors) + "\n\npython main.py --setup 또는 .env에서 수정하세요.")
         return True
 
     @classmethod
     def display(cls):
-        """현재 설정 표시 (민감한 정보는 마스킹)"""
         print("=" * 50)
         print("현재 설정:")
-        print("=" * 50)
         print(f"Ollama 모델: {cls.OLLAMA_MODEL}")
         print(f"Ollama 호스트: {cls.OLLAMA_HOST}")
         print(f"ASR 모델: {cls.ASR_MODEL}")
-        print(f"오디오 샘플레이트: {cls.AUDIO_SAMPLE_RATE}Hz")
-        print(f"오디오 청크 길이: {cls.AUDIO_CHUNK_DURATION}초")
-        print(f"LLM 최대 토큰: {cls.LLM_MAX_TOKENS}")
-        print(f"LLM 컨텍스트: {cls.LLM_NUM_CTX}")
-        print(f"응답 쿨다운: {cls.RESPONSE_COOLDOWN}초")
+        print(f"오디오: {cls.AUDIO_SAMPLE_RATE}Hz / {cls.AUDIO_CHUNK_DURATION}초")
+        print(f"스피커: {cls.AUDIO_SPEAKER_ID or '시스템 기본 장치'}")
+        print(f"응답 모드: {cls.RESPONSE_MODE} / 쿨다운: {cls.RESPONSE_COOLDOWN}초")
         print(f"응답 유효시간: {cls.RESPONSE_MAX_AGE_SECONDS:g}초 (캡처 시점 기준)")
         print(f"최근 채팅 문맥: {cls.CHAT_CONTEXT_MAX_AGE_SECONDS:g}초")
         print(f"이전 발화 문맥: {cls.SPEECH_CONTEXT_MAX_AGE_SECONDS:g}초")
-        print(f"응답 확률: {cls.RESPONSE_CHANCE}")
-        print(f"스마트 응답: {'켜짐' if cls.SMART_RESPONSE else '꺼짐'}")
-        print(f"응답 모드: {cls.RESPONSE_MODE}")
-        print(f"금칙어: {len(cls.BANNED_WORDS)}개")
-        print(f"워밍업: {cls.WARMUP_SECONDS}초" if cls.WARMUP_SECONDS > 0 else "워밍업: 없음")
-        print(f"치지직 채널 ID: {cls.CHZZK_CHANNEL_ID}")
-        print(f"네이버 쿠키: {'설정됨' if cls.NID_AUT else '미설정'}")
+        print(f"응답 확률: {cls.RESPONSE_CHANCE} / 스마트 판단: {'켜짐' if cls.SMART_RESPONSE else '꺼짐'}")
+        print(f"금칙어: {len(cls.BANNED_WORDS)}개 / 워밍업: {cls.WARMUP_SECONDS}초")
+        print(f"치지직 채널 ID: {cls.CHZZK_CHANNEL_ID or '미설정'}")
+        print(f"네이버 쿠키: {'설정됨' if cls.NID_AUT and cls.NID_SES else '미설정 또는 불완전'}")
         print("=" * 50)
+
+
+Config.load()

@@ -1,5 +1,7 @@
 # 나중에 여기부터
 
+**채팅 봇을 쓰려면 `start-bot.cmd`를 실행하세요.** 설정·진단·모델 없는 데모·미리보기·승인/자동 전송을 메뉴에서 선택합니다. [채팅 봇 시작 안내](docs/BOT.md) · [봇 모듈 구조](docs/BOT_ARCHITECTURE.md)
+
 앱과 Chrome 확장 코드는 준비되어 있습니다. 지금 바로 확인하지 않아도 됩니다.
 
 소스 코드 없이 쓰려면 [GitHub Releases](https://github.com/junhanzang/Chzzk-Bot/releases)의 `desk-v` 버전에서 Windows 설치 파일 또는 ZIP, Chrome 확장 ZIP을 받습니다. Chrome ZIP은 압축을 풀어 확장 관리 화면에 등록합니다. [배포 파일 안내](docs/releases/0.3.0.md) · [CI/CD와 다음 버전 배포](docs/RELEASING.md)

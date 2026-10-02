@@ -11,6 +11,7 @@ from collections import deque
 from datetime import datetime
 
 from chzzkpy.unofficial.chat import ChatClient, ChatMessage, DonationMessage
+from bot.connection import cancel_connection, close_client, close_loop, is_authentication_error
 from core_logic import ChatReconnectPolicy, extract_channel_id
 
 
@@ -36,36 +37,82 @@ class ChatReader:
         self._thread = None
         self._loop = None
         self._client = None
+        self._start_task = None
         self._running = False
         self._stop_event = threading.Event()
+        self._credentials_lock = threading.Lock()
         self._nid_aut = nid_aut
         self._nid_ses = nid_ses
+        self.status = "idle"
+        self.last_error = ""
 
     def set_credentials(self, nid_aut: str, nid_ses: str):
         """인증 정보 업데이트 (성인인증 채널용, 다음 재연결 시 적용)"""
-        self._nid_aut = nid_aut
-        self._nid_ses = nid_ses
+        with self._credentials_lock:
+            self._nid_aut = nid_aut
+            self._nid_ses = nid_ses
 
     def start(self):
         """채팅 리더 시작 (별도 스레드)"""
-        if self._running:
+        if self._running or (self._thread and self._thread.is_alive()):
             return
 
         self._running = True
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run_client, daemon=True)
+        self.status = "connecting"
+        self.last_error = ""
+        self._thread = threading.Thread(target=self._run_client, name="ChatReader", daemon=True)
         self._thread.start()
         print(f"채팅 리더 시작 (채널: {self.channel_id})")
 
     def _create_client(self) -> ChatClient:
         """현재 인증 정보로 새 ChatClient 생성 (재연결 시 채널 접속 상태 복구)"""
-        if self._nid_aut and self._nid_ses:
+        with self._credentials_lock:
+            nid_aut, nid_ses = self._nid_aut, self._nid_ses
+        if nid_aut and nid_ses:
             return ChatClient(
                 channel_id=self.channel_id,
-                authorization_key=self._nid_aut,
-                session_key=self._nid_ses,
+                authorization_key=nid_aut,
+                session_key=nid_ses,
             )
         return ChatClient(channel_id=self.channel_id)
+
+    def _register_events(self, client, policy):
+        # Each reconnect has its own closure: late events from an older socket
+        # cannot enter the current conversation or reset the connection status.
+        def is_current():
+            return self._running and self._client is client
+
+        @client.event
+        async def on_chat(message: ChatMessage):
+            if not is_current():
+                return
+            nickname = message.profile.nickname if message.profile else "???"
+            self.messages.append({"nickname": nickname, "content": message.content,
+                                  "time": self._message_time(message)})
+
+        @client.event
+        async def on_donation(message: DonationMessage):
+            if not is_current():
+                return
+            nickname = message.profile.nickname if message.profile else "???"
+            content = message.content or ""
+            if content:
+                self.donations.append({"nickname": nickname, "content": content,
+                                       "time": self._message_time(message)})
+
+        @client.event
+        async def on_connect():
+            if is_current():
+                policy.on_connected()
+                self.status = "connected"
+                self.last_error = ""
+                print("채팅 연결 성공! 메시지 수신 중...")
+
+        @client.event
+        async def on_disconnect():
+            if is_current():
+                self.status = "reconnecting"
 
     def _run_client(self):
         """별도 스레드에서 ChatClient 실행 (지수 백오프 자동 재연결)"""
@@ -82,48 +129,40 @@ class ChatReader:
                 client = self._create_client()
                 self._client = client
 
-                @client.event
-                async def on_chat(message: ChatMessage):
-                    nickname = message.profile.nickname if message.profile else "???"
-                    self.messages.append({
-                        "nickname": nickname,
-                        "content": message.content,
-                        "time": self._message_time(message),
-                    })
-
-                @client.event
-                async def on_donation(message: DonationMessage):
-                    nickname = message.profile.nickname if message.profile else "???"
-                    content = message.content or ""
-                    if content:
-                        self.donations.append({
-                            "nickname": nickname,
-                            "content": content,
-                            "time": self._message_time(message),
-                        })
-
-                @client.event
-                async def on_connect():
-                    policy.on_connected()
-                    print("채팅 연결 성공! 메시지 수신 중...")
+                self._register_events(client, policy)
 
                 # stop()이 while 조건 확인과 클라이언트 생성 사이에 호출될 수 있다.
                 # 그 경우 새 네트워크 연결을 시작하지 않는다.
                 if self._running:
-                    loop.run_until_complete(client.start())
+                    task = loop.create_task(client.start())
+                    self._start_task = task
+                    if not self._running:
+                        task.cancel()
+                    loop.run_until_complete(task)
 
+            except asyncio.CancelledError:
+                pass
             except Exception as e:
                 error = e
 
+            self._start_task = None
             self._close_client(loop, client)
             if self._client is client:
                 self._client = None
             if not self._running:
                 break
 
+            if error is not None and is_authentication_error(error):
+                self.status = "auth_required"
+                self.last_error = "채팅 읽기 로그인이 만료되었습니다. 다시 로그인해주세요."
+                print(self.last_error)
+                break
+
             delay = policy.on_disconnected()
+            self.status = "reconnecting"
             if error is not None:
-                print(f"채팅 리더 오류: {error} ({delay:.0f}초 후 재연결...)")
+                self.last_error = "채팅 읽기 연결 오류. 자동으로 다시 연결합니다."
+                print(f"채팅 읽기 연결 오류 ({delay:.0f}초 후 재연결...)")
             else:
                 print(f"채팅 연결 끊김 ({delay:.0f}초 후 재연결...)")
             # stop() 호출 시 즉시 깨어나도록 Event로 대기
@@ -131,26 +170,15 @@ class ChatReader:
             policy.on_retry()
 
         policy.on_stopped()
-        # 스레드 종료 시 루프 정리
-        try:
-            loop.close()
-        except Exception:
-            pass
+        close_loop(loop)
+        self._running = False
+        if self.status != "auth_required":
+            self.status = "stopped"
         self._loop = None
 
     @staticmethod
     def _close_client(loop, client):
-        """클라이언트만 정리 (루프가 돌고 있으면 건너뜀)"""
-        if client is None or loop.is_running():
-            return
-        try:
-            loop.run_until_complete(client.close())
-        except Exception:
-            pass
-        try:
-            loop.run_until_complete(asyncio.sleep(0.1))
-        except Exception:
-            pass
+        close_client(loop, client)
 
     @staticmethod
     def _message_time(message):
@@ -192,6 +220,8 @@ class ChatReader:
 
     def get_chat_rate(self, window: int = 30) -> float:
         """최근 N초 동안의 채팅 속도 (메시지/분)"""
+        if isinstance(window, bool) or not isinstance(window, (int, float)) or not math.isfinite(window) or window <= 0:
+            raise ValueError("window must be a finite positive number")
         recent = self._fresh_entries(self.messages, window)
         return len(recent) / (window / 60)
 
@@ -237,20 +267,13 @@ class ChatReader:
         """채팅 리더 종료"""
         self._running = False
         self._stop_event.set()  # 백오프 대기 중이면 즉시 깨움
-        # 클라이언트를 닫아서 start()를 종료시킴. 루프가 아직 start() 직전이면
-        # close 코루틴을 미리 큐에 넣어 종료 요청 뒤 연결이 남는 경쟁 조건을 막는다.
-        # 리더 스레드가 _client/_loop를 비울 수 있으므로 로컬로 스냅샷 후 사용한다.
-        client = self._client
-        loop = self._loop
-        if client and loop and not loop.is_closed():
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    client.close(), loop
-                ).result(timeout=3)
-            except Exception:
-                pass
-        if self._thread:
+        if self.status != "auth_required":
+            self.status = "stopping"
+        cancel_connection(self._loop, self._start_task)
+        if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=5)
+        if (not self._thread or not self._thread.is_alive()) and self.status != "auth_required":
+            self.status = "stopped"
         print("채팅 리더 종료")
 
 

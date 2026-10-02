@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "events": [
+    {"at": 0, "speech": "첫 번째 상자는 이미 열었어", "draft": "[SKIP]", "expected": "skipped"},
+    {"at": 2, "speech": "그 다음은?", "draft": "두 번째 상자도 궁금하네", "expected": "accepted"},
+    {"at": 3, "speech": "상자가 또 있네", "draft": "어떤 상자인데?", "expected": "cooldown"},
+    {"at": 15, "speech": "다음 상자는 뭘까?", "draft": "두 번째 상자도 궁금하네", "expected": "filtered"},
+    {"at": 30, "speech": "끝났다 수고했어", "draft": "드디어 끝냈네 수고했어", "delay": 21, "expected": "expired"},
+    {"at": 55, "speech": "오늘 방송은 여기까지", "draft": "오늘도 즐거웠어", "action": "skip", "expected": "skipped"},
+    {"at": 70, "speech": "컴퓨터 온도가 너무 높다", "draft": "GPU 온도부터 확인해볼까", "action": "edit", "edit": "잠깐 쉬었다 해도 좋겠다", "expected": "accepted"}
+  ]
+}
