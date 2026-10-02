@@ -36,6 +36,8 @@ jobs:
           npm run check --prefix desktop
       - name: Verify RPC recording and MP4 decoding without opening apps
         run: npm run test:browser-replay --prefix desktop
+      - name: Verify automatic clip timing and MP4 decoding without opening apps
+        run: npm run test:auto-clip --prefix desktop
       - name: Package Chrome extension
         run: npm run package --prefix browser-extension
       - name: Package and inspect Windows app

@@ -1,6 +1,7 @@
 import { createDom, createEventScope, setText as text } from '../shared/ui/dom.mjs';
 import { presentation } from '../shared/ui/model.mjs';
 import { connected as isConnected, paired as isPaired } from './state.mjs';
+import { autoClipBadge } from '../shared/ui/auto-clips.mjs';
 
 export function createClipsView({ document, run }) {
   const { $, $$, element: node, actionButton } = createDom(document);
@@ -27,7 +28,10 @@ export function createClipsView({ document, run }) {
         const description = node('div', 'clip-info');
         const title = node('strong', 'clip-title', clip.title || clip.fileName || '저장한 클립');
         title.title = title.textContent;
-        description.append(title, node('small', 'clip-meta', presentation.formatClipMeta(clip)));
+        const meta = node('small', 'clip-meta', presentation.formatClipMeta(clip));
+        const badge = autoClipBadge(clip.trigger);
+        if (badge) meta.append(node('span', 'auto-clip-badge', badge));
+        description.append(title, meta);
         const open = actionButton('button clip-open', '열기 ↗', 'open-clip', { clip: clip.id });
         open.setAttribute('aria-label', `${title.textContent} 클립 열기`);
         row.append(icon, description, open);

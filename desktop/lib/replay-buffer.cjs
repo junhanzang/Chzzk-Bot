@@ -7,54 +7,10 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { SLOT_IDS, validSlot } = require('./channels.cjs');
 
-const RETAIN_SECONDS = 90;
-const MAX_BYTES = 512 * 1024 * 1024;
-const MIN_SECONDS = 4;
+const { SegmentStore, parseManifest, selectSegments, validateSeconds, validateRange } = require('./segment-store.cjs');
+const { ClipExporter, safeTitle } = require('./clip-exporter.cjs');
 
-function validateSlot(slotId) {
-  validSlot(slotId);
-}
-
-// Ignore an unterminated line: FFmpeg may be in the middle of publishing it.
-function parseManifest(csv) {
-  const result = [];
-  const seen = new Set();
-  for (const line of String(csv).split('\n').slice(0, -1)) {
-    const match = line.trim().match(/^(?:"((?:[^"]|"")*)"|([^,]+)),\s*([\d.eE+-]+),\s*([\d.eE+-]+)$/);
-    if (!match) continue;
-    const fileName = (match[1] || match[2]).replace(/""/g, '"');
-    const start = Number(match[3]);
-    const end = Number(match[4]);
-    if (!/^segment-\d{9}\.ts$/.test(fileName) || seen.has(fileName)
-      || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) continue;
-    seen.add(fileName);
-    result.push({ fileName, start, end, duration: end - start });
-  }
-  return result.sort((a, b) => a.start - b.start);
-}
-
-function selectSegments(segments, seconds) {
-  if (!Number.isFinite(seconds) || seconds < MIN_SECONDS || seconds > RETAIN_SECONDS) {
-    throw new Error('저장 길이는 4초 이상 90초 이하여야 합니다.');
-  }
-  const selected = [];
-  let duration = 0;
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const segment = segments[i];
-    // A missing segment must not silently produce a clip spanning a gap.
-    if (selected.length && Math.abs(selected[0].start - segment.end) > 0.25) break;
-    selected.unshift(segment);
-    duration += segment.duration;
-    if (duration >= seconds) break;
-  }
-  if (duration < MIN_SECONDS) throw new Error('완료된 영상이 최소 4초 쌓인 뒤 저장할 수 있습니다.');
-  return { segments: selected, duration: Math.round(duration * 1000) / 1000 };
-}
-
-function safeTitle(value) {
-  return String(value || 'replay').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
-    .replace(/[. ]+$/g, '').slice(0, 60) || 'replay';
-}
+function validateSlot(slotId) { validSlot(slotId); }
 
 function validateInput(url, headers, allowLocalFiles) {
   if (typeof url !== 'string' || !url || /[\r\n\0]/.test(url)) throw new Error('녹화 주소가 올바르지 않습니다.');
@@ -100,7 +56,7 @@ class ReplayBuffer extends EventEmitter {
 
   _setStatus(session, state, error) {
     if (this.slots[session.slotId] !== session) return;
-    const status = { state, bufferedSeconds: Math.round(session.segments.reduce((sum, s) => sum + s.duration, 0) * 1000) / 1000 };
+    const status = { state, bufferedSeconds: session.store.bufferedSeconds };
     if (error) status.error = error;
     if (JSON.stringify(session.status) === JSON.stringify(status)) return;
     session.status = status;
@@ -114,24 +70,21 @@ class ReplayBuffer extends EventEmitter {
     return task;
   }
 
-  _files(session, action) {
-    const task = session.fileQueue.then(action);
-    session.fileQueue = task.catch(() => {});
-    return task;
-  }
-
   async start(slotId, options = {}) {
     validateSlot(slotId);
     const input = validateInput(options.url, options.headers, this.allowLocalFiles);
     return this._queue(slotId, async () => {
       await this._stop(slotId);
+      const generation = randomUUID();
       const session = {
-        slotId, dir: path.join(this.rootDir, `replay-${slotId}-${randomUUID()}`),
+        slotId, generation, dir: path.join(this.rootDir, `replay-${slotId}-${generation}`),
         channelId: String(options.channelId || ''), title: String(options.title || 'Replay'),
-        segments: [], status: { state: 'idle', bufferedSeconds: 0 }, stopping: false,
-        fileQueue: Promise.resolve(), jobs: new Set(), processes: new Set(),
-        lastProgressAt: Date.now(), lastFile: null, poll: null, timer: null,
+        status: { state: 'idle', bufferedSeconds: 0 }, stopping: false,
+        jobs: new Map(), processes: new Set(), poll: null, timer: null,
       };
+      session.store = new SegmentStore(session.dir);
+      session.exporter = new ClipExporter({ clipsDir: this.clipsDir, timeoutMs: this.exportTimeoutMs,
+        spawnProcess: (args, cwd) => this._spawn(session, args, cwd) });
       this.slots[slotId] = session;
       this._setStatus(session, 'starting');
       try {
@@ -178,6 +131,7 @@ class ReplayBuffer extends EventEmitter {
       throw new Error('FFmpeg를 실행하지 못했습니다. 설치 상태를 확인해 주세요.');
     }
     const process = { child, exited: false };
+    process.terminate = () => this._terminate(process);
     session.processes.add(process);
     let rejectReady;
     let readyTimer;
@@ -213,131 +167,78 @@ class ReplayBuffer extends EventEmitter {
   _fail(session, message) {
     if (session.stopping || session.status.state === 'error') return;
     clearInterval(session.timer);
+    for (const job of session.jobs.values()) if (job.anchored) job.controller.abort();
     this._setStatus(session, 'error', message);
     if (session.recorder && !session.recorder.exited) this._terminate(session.recorder).catch(() => {});
   }
 
-  async _readSegments(session) {
-    let manifest;
-    try { manifest = await fs.readFile(path.join(session.dir, 'manifest.csv'), 'utf8'); }
-    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-    const segments = [];
-    for (const segment of parseManifest(manifest)) {
-      try {
-        const info = await fs.stat(path.join(session.dir, segment.fileName));
-        if (info.isFile() && info.size > 0) segments.push({ ...segment, bytes: info.size });
-      } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    }
-    return segments;
-  }
-
   async _refresh(session) {
-    let segments = await this._readSegments(session);
-    const newest = segments.at(-1)?.fileName;
-    if (newest && newest !== session.lastFile) {
-      session.lastFile = newest;
-      session.lastProgressAt = Date.now();
-    }
-    let duration = segments.reduce((n, segment) => n + segment.duration, 0);
-    let bytes = segments.reduce((n, segment) => n + segment.bytes, 0);
-    while (segments.length > 1 && (duration - segments[0].duration >= RETAIN_SECONDS || bytes > MAX_BYTES)) {
-      const removed = segments.shift();
-      duration -= removed.duration;
-      bytes -= removed.bytes;
-    }
-    const keep = new Set(segments.map(segment => segment.fileName));
-    // Only remove files older than the newest completed file. The active output is never exported or pruned.
-    for (const name of await fs.readdir(session.dir)) {
-      if (!/^segment-\d{9}\.ts$/.test(name)) continue;
-      const filename = path.join(session.dir, name);
-      if (newest && name <= newest && !keep.has(name)) await fs.rm(filename, { force: true });
-      else {
-        const stat = await fs.stat(filename);
-        if (stat.size > MAX_BYTES) throw new Error('임시 녹화 파일의 용량 제한에 도달했습니다.');
-      }
-    }
-    session.segments = segments;
+    const segments = await session.store.refresh();
     if (!session.stopping && session.status.state !== 'error') this._setStatus(session, segments.length ? 'buffering' : 'starting');
     return segments;
   }
 
   _poll(session) {
     if (session.poll || session.stopping || session.status.state === 'error') return;
-    session.poll = this._files(session, async () => {
+    session.poll = (async () => {
       if (session.stopping) return;
       await this._refresh(session);
-      if (!session.stopping && Date.now() - session.lastProgressAt > this.stallTimeoutMs) {
+      if (!session.stopping && Date.now() - session.store.lastProgressAt > this.stallTimeoutMs) {
         this._fail(session, '녹화 데이터가 더 이상 들어오지 않습니다. 다시 시작해 주세요.');
       }
-    }).catch(() => this._fail(session, '임시 녹화를 유지하지 못했습니다. 저장 공간을 확인해 주세요.'))
+    })().catch(() => this._fail(session, '임시 녹화를 유지하지 못했습니다. 저장 공간을 확인해 주세요.'))
       .finally(() => { session.poll = null; });
   }
 
-  async save(slotId, seconds = 30) {
-    validateSlot(slotId);
-    if (!Number.isFinite(seconds) || seconds < MIN_SECONDS || seconds > RETAIN_SECONDS) {
-      throw new Error('저장 길이는 4초 이상 90초 이하여야 합니다.');
-    }
-    const session = this.slots[slotId];
-    // A disconnected/ended broadcast may still have a useful final moment on disk.
-    // _save validates completed segments; an error status itself does not invalidate them.
-    if (!session || session.stopping) throw new Error('임시 녹화를 먼저 시작해 주세요.');
-    if (session.jobs.size) throw new Error('이 방송의 영상을 이미 저장하고 있습니다. 잠시 기다려 주세요.');
-    const job = this._save(session, seconds);
-    session.jobs.add(job);
-    try { return await job; } finally { session.jobs.delete(job); }
+  _active(session) {
+    return session && this.slots[session.slotId] === session && !session.stopping &&
+      session.status.state === 'buffering' && session.recorder && !session.recorder.exited;
   }
 
-  async _save(session, seconds) {
-    const id = randomUUID();
-    const createdAt = new Date().toISOString();
-    const tempDir = path.join(session.dir, `export-${id}`);
-    const fileName = `${createdAt.replace(/[:.]/g, '-')}_${safeTitle(session.title)}_${id.slice(0, 8)}.mp4`;
-    const target = path.join(this.clipsDir, fileName);
-    const staging = path.join(this.clipsDir, `.replay-${id}.partial.mp4`);
-    let duration;
+  mark(slotId) {
+    validateSlot(slotId);
+    const session = this.slots[slotId];
+    if (!this._active(session)) return null;
+    const interval = session.store.mark();
+    return interval ? { generation: session.generation, channelId: session.channelId, ...interval } : null;
+  }
+
+  async save(slotId, seconds = 30) {
+    validateSlot(slotId); validateSeconds(seconds);
+    const session = this.slots[slotId];
+    // Manual saves may recover the final completed moments after a disconnect.
+    if (!session || session.stopping) throw new Error('임시 녹화를 먼저 시작해 주세요.');
+    return this._saveJob(session, { seconds });
+  }
+
+  async saveRange(slotId, range = {}) {
+    validateSlot(slotId); validateRange(range);
+    const session = this.slots[slotId];
+    if (!this._active(session)) throw new Error('진행 중인 임시 녹화가 필요합니다.');
+    if (typeof range.generation !== 'string' || range.generation !== session.generation) throw new Error('녹화 방송이 변경되었습니다.');
+    return this._saveJob(session, { range: { start: range.start, end: range.end } }, true);
+  }
+
+  async _saveJob(session, selection, anchored = false) {
+    if (session.jobs.size) throw new Error('이 방송의 영상을 이미 저장하고 있습니다. 잠시 기다려 주세요.');
+    const controller = new AbortController();
+    const operation = this._save(session, selection, controller, anchored);
+    session.jobs.set(operation, { controller, anchored });
+    try { return await operation; } finally { session.jobs.delete(operation); }
+  }
+
+  async _save(session, selection, controller, anchored) {
+    let snapshot;
     try {
-      await this._files(session, async () => {
-        if (session.stopping) throw new Error('영상 저장이 취소되었습니다.');
-        const selection = selectSegments(await this._refresh(session), seconds);
-        duration = selection.duration;
-        await fs.mkdir(tempDir, { recursive: true });
-        const lines = [];
-        for (let i = 0; i < selection.segments.length; i++) {
-          if (session.stopping) throw new Error('영상 저장이 취소되었습니다.');
-          const name = `part-${i}.ts`;
-          await fs.copyFile(path.join(session.dir, selection.segments[i].fileName), path.join(tempDir, name));
-          lines.push(`file '${name}'`);
-        }
-        await fs.writeFile(path.join(tempDir, 'concat.txt'), `${lines.join('\n')}\n`);
-      });
-      if (session.stopping) throw new Error('영상 저장이 취소되었습니다.');
-      const process = this._spawn(session, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
-        '-f', 'concat', '-safe', '1', '-i', 'concat.txt', '-map', '0:v:0?', '-map', '0:a:0?',
-        '-c', 'copy', '-movflags', '+faststart', staging], tempDir);
-      await process.ready;
-      let timeout;
-      const result = await Promise.race([process.done, new Promise(resolve => {
-        timeout = setTimeout(() => {
-          this._terminate(process).then(() => resolve({ error: true }));
-        }, this.exportTimeoutMs);
-        timeout.unref?.();
-      })]).finally(() => clearTimeout(timeout));
-      if (session.stopping) throw new Error('영상 저장이 취소되었습니다.');
-      if (result.error || result.code !== 0) throw new Error('영상을 저장하지 못했습니다.');
-      const info = await fs.stat(staging);
-      if (!info.size) throw new Error('영상을 저장하지 못했습니다.');
-      if (session.stopping) throw new Error('영상 저장이 취소되었습니다.');
-      await fs.rename(staging, target);
-      return { id, fileName, path: target, createdAt, duration, channelId: session.channelId, title: session.title };
+      snapshot = await session.store.snapshot(selection, controller.signal);
+      if (!session.stopping && session.status.state !== 'error') this._setStatus(session, 'buffering');
+      if (session.stopping || (anchored && !this._active(session))) controller.abort();
+      return await session.exporter.export(snapshot, { channelId: session.channelId, title: session.title }, controller.signal);
     } catch (error) {
-      if (session.stopping) throw new Error('영상 저장이 취소되었습니다.');
-      if (/^완료된 영상이 최소 4초/.test(error.message)) throw error;
+      if (controller.signal.aborted || session.stopping) throw new Error('영상 저장이 취소되었습니다.');
+      if (/^완료된 영상이 최소 4초|^요청한 영상 구간/.test(error.message)) throw error;
       throw new Error('영상을 저장하지 못했습니다. 저장 공간을 확인한 뒤 다시 시도해 주세요.');
-    } finally {
-      await fs.rm(staging, { force: true }).catch(() => {});
-      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-    }
+    } finally { await snapshot?.release(); }
   }
 
   async _terminate(process) {
@@ -359,6 +260,7 @@ class ReplayBuffer extends EventEmitter {
     if (session) {
       session.stopping = true;
       clearInterval(session.timer);
+      for (const job of session.jobs.values()) job.controller.abort();
       for (const process of session.processes) this._terminate(process).catch(() => {});
     }
     return this._queue(slotId, () => this._stop(slotId));
@@ -369,10 +271,10 @@ class ReplayBuffer extends EventEmitter {
     if (!session) return;
     session.stopping = true;
     clearInterval(session.timer);
+    for (const job of session.jobs.values()) job.controller.abort();
     await Promise.all([...session.processes].map(process => this._terminate(process)));
-    await Promise.allSettled([...session.jobs]);
-    await session.fileQueue;
-    await fs.rm(session.dir, { recursive: true, force: true }).catch(() => {});
+    await Promise.allSettled([...session.jobs.keys()]);
+    await session.store.close();
     if (this.slots[slotId] === session) {
       this.slots[slotId] = null;
       this.emit('status', { slotId, status: this.status(slotId) });

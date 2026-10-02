@@ -111,3 +111,19 @@ test('panel controller owns visibility timers, deduplicates notices, and ignores
   assert.equal(document.listeners.size, 0);
   assert.equal(controller.snapshot().state.channels[0].id, 'channel');
 });
+
+test('panel controller keeps applied auto clip settings when the following refresh fails', async () => {
+  const { createPanelController } = await import('../ui/controller.mjs');
+  const applied = { ...state('channel'), autoClipSettings: { channel: { enabled: true, keywords: ['우승'], chatSpike: false } } };
+  const notices = [], messages = [];
+  const controller = createPanelController({ document: new Visibility(), onNotice: message => notices.push(message), sendMessage: async message => {
+    messages.push(message);
+    return message.method === 'setAutoClipSettings' ? { ok: true, value: applied } : { ok: false, error: '상태 새로고침 실패' };
+  } });
+  assert.equal(await controller.execute('setAutoClipSettings', { channelId: 'channel', ...applied.autoClipSettings.channel }), true);
+  assert.deepEqual(controller.snapshot().state.autoClipSettings, applied.autoClipSettings);
+  assert.equal(controller.snapshot().pending, false);
+  assert.deepEqual(messages.map(message => message.method), ['setAutoClipSettings', 'getState']);
+  assert.deepEqual(notices, ['상태 새로고침 실패']);
+  controller.dispose();
+});

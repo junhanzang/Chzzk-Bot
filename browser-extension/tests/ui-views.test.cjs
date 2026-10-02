@@ -125,14 +125,15 @@ test('bounds reporter resends unchanged geometry when a player becomes ready and
   surface.setAttribute('data-role', 'surface'); surface.dataset.role = 'surface';
   surface.getBoundingClientRect = () => ({ left: 20, top: 100, right: 400, bottom: 400 });
   card.append(surface); document.append(workspace, grid);
-  const frames = new Map(), sent = []; let frameId = 0, disconnected = false;
+  const frames = new Map(), sent = [], observed = []; let frameId = 0, disconnected = false;
   const window = new Element();
   Object.assign(window, { innerWidth: 800, innerHeight: 600,
     getComputedStyle: () => ({ paddingBottom: '10px' }), requestAnimationFrame(callback) { frames.set(++frameId, callback); return frameId; }, cancelAnimationFrame: id => frames.delete(id),
-    ResizeObserver: class { observe() {} disconnect() { disconnected = true; } }
+    ResizeObserver: class { observe(node) { observed.push(node); } disconnect() { disconnected = true; } }
   });
   const flushFrame = async () => { const callbacks = [...frames.values()]; frames.clear(); for (const callback of callbacks) await callback(); };
   const reporter = createPlayerBounds({ document, window, cards: [card], sendBounds: async bounds => sent.push(bounds), onError: error => assert.fail(error) });
+  assert.deepEqual(observed, [card, surface], 'Footer expansion can move other videos without resizing their surfaces');
   reporter.update([{ slotId: 0, channelId: 'one', pageStatus: 'loading' }]); await flushFrame();
   reporter.request(); await flushFrame(); assert.equal(sent.length, 1);
   reporter.update([{ slotId: 0, channelId: 'one', pageStatus: 'ready' }]); await flushFrame(); assert.equal(sent.length, 2);
@@ -143,3 +144,103 @@ test('bounds reporter resends unchanged geometry when a player becomes ready and
   assert.equal(document.listeners.get('scroll').size, 0);
   assert.equal(window.listeners.get('resize').size, 0);
 });
+
+test('auto clip status uses the current channel and does not confuse observation and recorder generations', async () => {
+  const { autoClipForSlot, describeAutoClip, autoClipBadge } = await import('../shared/ui/auto-clips.mjs');
+  const current = { slotId: 0, channelId: 'current', generation: 'observation', status: 'needs-buffer', message: '구간 보관을 켜 주세요.' };
+  const entries = [{ ...current, channelId: 'previous', status: 'saving' }, current];
+  assert.equal(autoClipForSlot(entries, { slotId: 0, channelId: 'current', generation: 7 }), current);
+  assert.equal(autoClipForSlot(entries, { slotId: 1, channelId: 'current' }), undefined);
+  assert.equal(describeAutoClip({ enabled: true }, current).summary, '구간 보관 필요');
+  assert.equal(describeAutoClip({ enabled: true }, { ...current, status: 'pending', savedCount: 2 }).summary, '감지됨 · 뒷부분 보관 중 · 2개 저장');
+  assert.equal(describeAutoClip({ enabled: true }, { ...current, status: 'error' }).error, true);
+  assert.equal(describeAutoClip({ enabled: false }, { ...current, status: 'saving' }).summary, '꺼짐');
+  assert.equal(describeAutoClip({ enabled: true }, current, false).summary, '앱 연결 필요');
+  assert.equal(autoClipBadge('keyword'), '자동 · 키워드');
+  assert.equal(autoClipBadge('chat-spike'), '자동 · 채팅 급증');
+  assert.equal(autoClipBadge(undefined), '');
+});
+
+test('auto clip form keeps edits through refresh, applies explicitly, and retains rejected drafts', async () => {
+  const { createAutoClipControls } = await import('../shared/ui/auto-clips.mjs');
+  const document = new Document([]), calls = [];
+  let finish, result = new Promise(resolve => { finish = resolve; });
+  const view = createAutoClipControls({ document, label: '방송 A', onApply: argument => { calls.push(argument); return result; } });
+  const state = { channelId: 'one', settings: { enabled: false, keywords: [], chatSpike: false }, available: true, pending: false };
+  view.render(state);
+  const form = view.element.querySelector('form'), apply = view.element.querySelector('button');
+  const enabled = view.element.querySelector('[data-role="auto-clip-enabled"]');
+  const keywords = view.element.querySelector('[data-role="auto-clip-keywords"]');
+  const spike = view.element.querySelector('[data-role="auto-clip-spike"]');
+  assert.equal(enabled.checked, false);
+  enabled.checked = true; await enabled.dispatch('change');
+  keywords.value = ' 우승, 레전드 '; await keywords.dispatch('input');
+  spike.checked = true; await spike.dispatch('change');
+  view.render({ ...state, activity: { status: 'disabled' } });
+  assert.equal(keywords.value, ' 우승, 레전드 ');
+  assert.equal(enabled.checked, true);
+  assert.equal(calls.length, 0, 'Editing must not enable automatic saving');
+  const applying = form.dispatch('submit');
+  assert.deepEqual(calls, [{ channelId: 'one', enabled: true, keywords: ['우승', '레전드'], chatSpike: true }]);
+  assert.equal(apply.disabled, true);
+  assert.equal(keywords.disabled, true);
+  await form.dispatch('submit');
+  assert.equal(calls.length, 1, 'Pending applies must be excluded');
+  const accepted = { ...state, settings: calls[0] };
+  view.render(accepted);
+  finish(true); await applying;
+  assert.equal(keywords.value, '우승, 레전드', 'Successful applies show server settings');
+  assert.equal(apply.disabled, true);
+  keywords.value = '실패해도 남을 입력'; await keywords.dispatch('input');
+  result = Promise.resolve(false);
+  await form.dispatch('submit');
+  view.render(accepted);
+  assert.equal(keywords.value, '실패해도 남을 입력');
+  assert.equal(apply.disabled, false);
+  view.dispose();
+});
+
+test('auto clip controls require app connection, reset on channel change, and drop late completions after disposal', async () => {
+  const { createAutoClipControls } = await import('../shared/ui/auto-clips.mjs');
+  const document = new Document([]), calls = [];
+  let finish;
+  const view = createAutoClipControls({ document, label: '방송 B', onApply: argument => { calls.push(argument); return new Promise(resolve => { finish = resolve; }); } });
+  const state = { channelId: 'one', settings: { enabled: true, keywords: ['첫 방송'], chatSpike: false }, available: false, pending: false };
+  const form = view.element.querySelector('form'), keywords = view.element.querySelector('[data-role="auto-clip-keywords"]');
+  view.render(state);
+  assert.equal(keywords.disabled, true);
+  assert.equal(view.element.querySelector('.auto-clip-status').textContent, '앱 연결 필요');
+  await form.dispatch('submit'); assert.equal(calls.length, 0);
+  view.render({ ...state, available: true });
+  keywords.value = '이전 방송 수정'; await keywords.dispatch('input');
+  view.element.open = true;
+  view.render({ ...state, channelId: 'two', settings: { enabled: false, keywords: ['다른 방송'], chatSpike: true }, available: true });
+  assert.equal(keywords.value, '다른 방송');
+  assert.equal(view.element.open, false);
+  keywords.value = '새 조건'; await keywords.dispatch('input');
+  const applying = form.dispatch('submit');
+  assert.equal(calls[0].channelId, 'two');
+  view.dispose();
+  const before = view.element.textContent;
+  finish(true); await applying;
+  assert.equal(view.element.textContent, before);
+  await form.dispatch('submit'); assert.equal(calls.length, 1);
+  assert.equal(keywords.listeners.get('input').size, 0);
+});
+
+for (const platform of ['desktop', 'extension']) {
+  test(`${platform} library marks automatic clips without marking manual saves`, async () => {
+    const { createClipsView } = await import(platform === 'desktop' ? '../../desktop/ui/clips.mjs' : '../ui/clips.mjs');
+    const document = new Document(clipsIds), value = snapshot();
+    if (platform === 'extension') value.pending = false;
+    const view = createClipsView({ document, run() {} });
+    value.state.clips = [{ id: 'manual', fileName: 'manual.mp4' }, { id: 'auto', fileName: 'auto.mp4', trigger: 'keyword' }];
+    view.render(value);
+    const list = document.querySelector('#clips-list');
+    assert.equal(list.querySelectorAll('.auto-clip-badge').length, 1);
+    assert.equal(list.querySelector('.auto-clip-badge').textContent, '자동 · 키워드');
+    value.state.clips[1].trigger = 'chat-spike'; view.render(value);
+    assert.equal(list.querySelector('.auto-clip-badge').textContent, '자동 · 채팅 급증');
+    view.dispose();
+  });
+}

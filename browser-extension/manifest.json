@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "치지직 데스크",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "치지직 방송 네 개의 배치와 소리를 관리하고 통나무 보상을 자동 수령합니다. 앱을 연결하면 최근 구간도 저장할 수 있어요.",
   "minimum_chrome_version": "116",
   "incognito": "not_allowed",
@@ -9,7 +9,7 @@
   "host_permissions": ["https://chzzk.naver.com/*", "https://api.chzzk.naver.com/*", "http://127.0.0.1/*"],
   "content_scripts": [{
     "matches": ["https://chzzk.naver.com/*"],
-    "js": ["shared/rewards.js", "content/rewards-adapter.js"],
+    "js": ["shared/rewards.js", "content/rewards-adapter.js", "shared/chat-observer.js", "content/chat-adapter.js"],
     "run_at": "document_idle",
     "all_frames": false
   }],

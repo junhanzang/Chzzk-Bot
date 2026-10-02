@@ -6,6 +6,11 @@ chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).catch((
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.target === 'desk-chat') {
+    controller.handleChatMessage(message, sender).then(value => sendResponse({ ok: true, value }),
+      () => sendResponse({ ok: false, error: '채팅 전달 조건이 바뀌었어요. 연결과 방송 설정을 다시 확인합니다.' }));
+    return true;
+  }
   if (message?.target === 'desk-rewards') {
     controller.handleRewardMessage(message, sender).then(value => sendResponse({ ok: true, value }),
       error => sendResponse({ ok: false, error: error.message || '통나무 상태를 확인하지 못했어요.' }));

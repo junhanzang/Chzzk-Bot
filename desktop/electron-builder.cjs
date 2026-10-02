@@ -16,7 +16,7 @@ module.exports = {
     'package.json', '!**/node_modules/**',
     { from: '.', to: 'desktop', filter: ['main.cjs', 'preload.cjs', 'lib/**/*.cjs', 'ui/*.mjs', 'ui/*.html', 'ui/*.css'] },
     { from: '../browser-extension/shared', to: 'browser-extension/shared',
-      filter: ['channels.js', 'presentation.js', 'rewards.js', 'package.json', 'REWARDS-SOURCES.md', 'ui/*.mjs'] }
+      filter: ['channels.js', 'presentation.js', 'rewards.js', 'chat-observer.js', 'package.json', 'REWARDS-SOURCES.md', 'ui/*.mjs'] }
   ],
   // spawn() requires a real executable path, not a path within app.asar.
   extraResources: [

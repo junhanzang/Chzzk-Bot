@@ -62,7 +62,7 @@ function browserFixture() {
 
 function remoteFixture() {
   const state = { channels: [], slots: [0, 1, 2, 3].map(slotId => ({ slotId, channelId: null, playbackMode: 'browser', replay: { state: 'idle', bufferedSeconds: 0 } })),
-    layout: 'side-by-side', mainSlot: 0, clipSeconds: 30, audioSlot: null, clips: [], savingSlots: [], ffmpegAvailable: true, auth: { status: 'signed_in', nickname: 'must-not-leak' }, secret: TOKEN };
+    layout: 'side-by-side', mainSlot: 0, clipSeconds: 30, autoClipSettings: {}, autoClips: [], audioSlot: null, clips: [], savingSlots: [], ffmpegAvailable: true, auth: { status: 'signed_in', nickname: 'must-not-leak' }, secret: TOKEN };
   const calls = [];
   let unavailable = false;
   const fetchImpl = async (url, options) => {
@@ -80,6 +80,7 @@ function remoteFixture() {
     if (method === 'assignSlot') Object.assign(state.slots[arg.slotId], { channelId: arg.channelId, playbackMode: arg.playbackMode });
     if (method === 'setLayout') Object.assign(state, { layout: arg.layout, mainSlot: arg.mainSlot });
     if (method === 'setClipSeconds') state.clipSeconds = arg;
+    if (method === 'setAutoClipSettings') state.autoClipSettings[arg.channelId] = model.normalizeAutoClipConfig(arg);
     if (method === 'clearSlot') state.slots[arg].channelId = null;
     if (method === 'removeChannel') {
       state.channels = state.channels.filter(channel => channel.id !== arg);
@@ -754,4 +755,123 @@ test('DesktopConnection exposes independent snapshots and never touches browser 
   await connection.disconnect();
   assert.equal(connection.paired, false);
   assert.equal(f.effects.length, 0);
+});
+
+async function setupChat() {
+  const f = await setup();
+  await f.controller.handle('pair', CODE);
+  await f.controller.handle('addChannel', { input: ID_A, name: 'A' });
+  f.remote.state.autoClips = [{ slotId: 0, channelId: ID_A, generation: 'generation-1', status: 'warming', message: '준비 중' }];
+  await f.controller.handle('setAutoClipSettings', { channelId: ID_A, enabled: true, keywords: ['키워드'], chatSpike: true });
+  return { ...f, sender: rewardSender(f) };
+}
+
+test('automatic clip settings are paired-only, sanitized and preserve clip trigger labels', async () => {
+  const f = await setup();
+  let state = await f.controller.handle('getState');
+  assert.deepEqual(state.autoClipSettings, {});
+  assert.ok(state.autoClips.every(slot => slot.status === 'unavailable'));
+  await assert.rejects(f.controller.handle('setAutoClipSettings', { channelId: ID_A, enabled: true }), /데스크톱 앱/);
+  await f.controller.handle('pair', CODE);
+  await f.controller.handle('addChannel', { input: ID_A });
+  f.remote.state.clips = [{ id: 'clip-1', trigger: 'keyword', title: '자동 클립' }];
+  state = await f.controller.handle('setAutoClipSettings', { channelId: ID_A, enabled: true, keywords: [' 키워드 ', '키워드'], chatSpike: true, secret: TOKEN });
+  assert.deepEqual(state.autoClipSettings, { [ID_A]: { enabled: true, keywords: ['키워드'], chatSpike: true } });
+  assert.equal(state.clips[0].trigger, 'keyword');
+  assert.equal(JSON.stringify(state).includes(TOKEN), false);
+  assert.deepEqual(f.remote.calls.find(([method]) => method === 'setAutoClipSettings')[1],
+    { channelId: ID_A, enabled: true, keywords: [' 키워드 ', '키워드'], chatSpike: true });
+  f.remote.setUnavailable(true);
+  await assert.rejects(f.controller.handle('setAutoClipSettings', { channelId: ID_A, enabled: false }), /연결/);
+  assert.equal(f.local['desk.preferences']?.autoClipSettings, undefined, 'There is no stale standalone fallback');
+});
+
+test('chat content receives only active context and submits a fixed RPC without per-batch refresh or raw-chat storage', async () => {
+  const f = await setupChat();
+  const context = await f.controller.handleChatMessage({ method: 'getContext' }, f.sender);
+  assert.deepEqual(context, { slotId: 0, channelId: ID_A, generation: 'generation-1' });
+  const before = f.remote.calls.length;
+  const batch = { ...context, sourceStatus: 'watching', events: [{ id: 'message-1', text: '원본 채팅은 저장하지 않음', nickname: '제외' }] };
+  assert.equal(await f.controller.handleChatMessage({ method: 'submitBatch', arg: batch }, f.sender), true);
+  assert.deepEqual(f.remote.calls.slice(before), [['submitChatBatch', { ...batch, events: [{ id: 'message-1', text: '원본 채팅은 저장하지 않음' }] }]]);
+  assert.equal(JSON.stringify([f.local, f.session]).includes('원본 채팅은 저장하지 않음'), false);
+  assert.equal(await f.controller.handleChatMessage({ method: 'submitBatch', arg: { ...context, sourceStatus: 'waiting', events: [] } }, f.sender), true);
+});
+
+test('chat rejects other frames/tabs/origins, stale generations, oversized messages and arbitrary methods', async () => {
+  const f = await setupChat();
+  const context = await f.controller.handleChatMessage({ method: 'getContext' }, f.sender);
+  const batch = { ...context, sourceStatus: 'watching', events: [{ id: 'message-1', text: '본문' }] };
+  const invalidSenders = [
+    { ...f.sender, id: 'other-extension' }, { ...f.sender, frameId: 1 },
+    { ...f.sender, tab: { ...f.sender.tab, incognito: true } },
+    { ...f.sender, tab: { id: 999 } }, { ...f.sender, url: 'https://example.com/live/' + ID_A },
+    { ...f.sender, url: 'https://chzzk.naver.com/live/' + ID_B }
+  ];
+  const before = f.remote.calls.length;
+  for (const sender of invalidSenders) {
+    assert.equal(await f.controller.handleChatMessage({ method: 'getContext' }, sender), null);
+    await assert.rejects(f.controller.handleChatMessage({ method: 'submitBatch', arg: batch }, sender));
+  }
+  for (const arg of [{ ...batch, generation: 'old' }, { ...batch, channelId: ID_B }, { ...batch, slotId: 1 },
+    { ...batch, events: Array(101).fill(batch.events[0]) }, { ...batch, events: [{ id: 'x'.repeat(129), text: 'a' }] },
+    { ...batch, events: [{ id: 'x', text: 'a'.repeat(501) }] }, { ...batch, sourceStatus: 'unknown' },
+    { ...batch, events: Array.from({ length: 100 }, (_, index) => ({ id: String(index), text: '가'.repeat(500) })) }]) {
+    await assert.rejects(f.controller.handleChatMessage({ method: 'submitBatch', arg }, f.sender));
+  }
+  await assert.rejects(f.controller.handleChatMessage({ method: 'saveClip', arg: batch }, f.sender), /지원하지/);
+  assert.equal(f.remote.calls.length, before, 'Rejected content does not reach the desktop transport');
+  f.tabs.get(f.sender.tab.id).url = 'https://example.com/';
+  assert.equal(await f.controller.handleChatMessage({ method: 'getContext' }, f.sender), null);
+});
+
+test('chat stops on generation/config changes and an in-flight tab lookup cannot revive a released slot', async () => {
+  const f = await setupChat();
+  const context = await f.controller.handleChatMessage({ method: 'getContext' }, f.sender);
+  const request = { method: 'submitBatch', arg: { ...context, sourceStatus: 'watching', events: [] } };
+  f.remote.state.autoClips[0].generation = 'generation-2';
+  await f.controller.handle('getState');
+  await assert.rejects(f.controller.handleChatMessage(request, f.sender));
+  await f.controller.handle('setAutoClipSettings', { channelId: ID_A, enabled: false, keywords: ['키워드'], chatSpike: true });
+  assert.equal(await f.controller.handleChatMessage({ method: 'getContext' }, f.sender), null);
+  await f.controller.handle('setAutoClipSettings', { channelId: ID_A, enabled: true, keywords: ['키워드'], chatSpike: true });
+  const originalGet = f.chromeApi.tabs.get;
+  let release, held = false;
+  f.chromeApi.tabs.get = async id => {
+    const tab = await originalGet(id);
+    if (!held) { held = true; return new Promise(resolve => { release = () => resolve(tab); }); }
+    return tab;
+  };
+  const pending = f.controller.handleChatMessage({ ...request, arg: { ...request.arg, generation: 'generation-2' } }, f.sender);
+  const rejection = assert.rejects(pending);
+  await new Promise(resolve => setImmediate(resolve));
+  await f.controller.handle('clearSlot', 0);
+  release(); await rejection;
+  assert.equal(f.remote.calls.some(([method]) => method === 'submitChatBatch'), false);
+});
+
+test('invalid auto-clip input reaches strict desktop validation intact instead of being silently truncated', async () => {
+  const f = await setupChat();
+  const keywords = ['가'.repeat(41)];
+  const originalFetch = f.controller.fetchImpl;
+  f.controller.fetchImpl = async (url, options) => {
+    const { method, arg } = JSON.parse(options.body);
+    if (method === 'setAutoClipSettings') {
+      assert.deepEqual(arg.keywords, keywords);
+      return { ok: true, status: 200, json: async () => ({ ok: false, error: '키워드는 최대 10개, 각각 40자까지 입력해 주세요.' }) };
+    }
+    return originalFetch(url, options);
+  };
+  await assert.rejects(f.controller.handle('setAutoClipSettings', { channelId: ID_A, enabled: true, keywords, chatSpike: true }), /40자/);
+  assert.deepEqual(f.controller.snapshot().autoClipSettings[ID_A].keywords, ['키워드']);
+});
+
+test('desktop rejection of a stale chat generation is not reported as accepted to content', async () => {
+  const f = await setupChat();
+  const context = await f.controller.handleChatMessage({ method: 'getContext' }, f.sender);
+  const originalFetch = f.controller.fetchImpl;
+  f.controller.fetchImpl = async (url, options) => JSON.parse(options.body).method === 'submitChatBatch'
+    ? { ok: true, status: 200, json: async () => ({ ok: true, value: { accepted: false } }) }
+    : originalFetch(url, options);
+  await assert.rejects(f.controller.handleChatMessage({ method: 'submitBatch', arg: { ...context, sourceStatus: 'watching', events: [] } }, f.sender), /전달하지/);
 });

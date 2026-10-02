@@ -11,7 +11,7 @@ function allowedAppFile(file) {
   return ['package.json', 'LICENSE', 'desktop/main.cjs', 'desktop/preload.cjs'].includes(file) ||
     /^desktop\/lib\/[a-z0-9-]+\.cjs$/.test(file) ||
     /^desktop\/ui\/[a-z0-9-]+\.(?:mjs|html|css)$/.test(file) ||
-    /^browser-extension\/shared\/(?:channels\.js|presentation\.js|rewards\.js|package\.json|REWARDS-SOURCES\.md|ui\/[a-z0-9-]+\.mjs)$/.test(file);
+    /^browser-extension\/shared\/(?:channels\.js|presentation\.js|rewards\.js|chat-observer\.js|package\.json|REWARDS-SOURCES\.md|ui\/[a-z0-9-]+\.mjs)$/.test(file);
 }
 
 function checkRelativeReferences(files, readFile) {
@@ -50,7 +50,7 @@ function verifyPackage(appDirectory = path.resolve(__dirname, '..', 'dist', 'win
   assert(files.length > 0, 'Application archive is empty');
   for (const file of files) assert(allowedAppFile(file), `Unexpected file in app.asar: ${file}`);
   for (const file of ['package.json', 'desktop/main.cjs', 'desktop/preload.cjs', 'desktop/ui/index.html',
-    'browser-extension/shared/channels.js', 'browser-extension/shared/rewards.js', 'browser-extension/shared/REWARDS-SOURCES.md']) {
+    'browser-extension/shared/channels.js', 'browser-extension/shared/chat-observer.js', 'browser-extension/shared/rewards.js', 'browser-extension/shared/REWARDS-SOURCES.md']) {
     assert(files.includes(file), `Required package file is missing: ${file}`);
   }
   const readFile = file => asar.extractFile(archive, file.split('/').join(path.sep)).toString('utf8');

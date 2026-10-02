@@ -41,6 +41,18 @@
     return typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 100) || fallback : fallback;
   }
 
+  function normalizeAutoClipConfig(raw = {}) {
+    const keywords = [...new Set((Array.isArray(raw?.keywords) ? raw.keywords : []).slice(0, 10)
+      .filter(value => typeof value === 'string').map(value => cleanTitle(value).slice(0, 40)).filter(Boolean))];
+    return { enabled: raw?.enabled === true, keywords, chatSpike: raw?.chatSpike === true };
+  }
+
+  function normalizeAutoClipSettings(raw, channels) {
+    const result = {};
+    for (const channel of channels) if (raw && Object.hasOwn(raw, channel.id)) result[channel.id] = normalizeAutoClipConfig(raw[channel.id]);
+    return result;
+  }
+
   function normalizeSettings(raw = {}) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {};
     const channels = [];
@@ -53,7 +65,8 @@
       return channels.some(channel => channel.id === id) ? id : null;
     });
     const normalized = { channels, slots, ...normalizeLayout(raw), clipSeconds: normalizeClipSeconds(raw.clipSeconds),
-      rewardSettings: { enabled: raw.rewardSettings?.enabled === true } };
+      rewardSettings: { enabled: raw.rewardSettings?.enabled === true },
+      autoClipSettings: normalizeAutoClipSettings(raw.autoClipSettings, channels) };
     if (Array.isArray(raw.playbackModes)) {
       normalized.playbackModes = SLOT_IDS.map(slotId => slots[slotId] && raw.playbackModes[slotId] === 'browser' ? 'browser' : 'desktop');
     }
@@ -67,5 +80,5 @@
   }
 
   return { parseChannel, cleanTitle, normalizeSettings, validSlot, SLOT_IDS, LAYOUTS, normalizeLayout,
-    CLIP_DURATIONS, normalizeClipSeconds, validClipSeconds };
+    CLIP_DURATIONS, normalizeClipSeconds, validClipSeconds, normalizeAutoClipConfig, normalizeAutoClipSettings };
 });

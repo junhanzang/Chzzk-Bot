@@ -1,6 +1,7 @@
 import { createDom, createEventScope } from '../../browser-extension/shared/ui/dom.mjs';
 import { presentation, slotIds, letters, ordinals, layouts, slotKey, getSlot as findSlot } from '../../browser-extension/shared/ui/model.mjs';
 import { canSave as canSaveClip, isSaving as isSavingClip } from './state.mjs';
+import { autoClipForSlot, createAutoClipControls } from '../../browser-extension/shared/ui/auto-clips.mjs';
 
 export function createPlayersView({ document, run, notify }) {
   const { $, element } = createDom(document);
@@ -23,6 +24,7 @@ export function createPlayersView({ document, run, notify }) {
     $('.players-grid').append(card);
   }
   const cards = [...document.querySelectorAll('.player-card')];
+  const autoClips = [];
   cards.forEach((card, slotId) => {
     const main = element('button', 'main-button', '메인');
     main.type = 'button';
@@ -34,6 +36,10 @@ export function createPlayersView({ document, run, notify }) {
     reward.setAttribute('role', 'status');
     reward.setAttribute('aria-live', 'polite');
     $('.player-footer', card).append(reward);
+    const autoClip = createAutoClipControls({ document, label: `방송 ${letters[slotId]}`,
+      onApply: argument => run(`auto-clip-${argument.channelId}`, 'setAutoClipSettings', argument, '자동 저장 설정을 적용했어요.') });
+    autoClips.push(autoClip);
+    $('.player-footer', card).append(autoClip.element);
   });
   function render(next) {
     snapshot = next;
@@ -113,6 +119,8 @@ export function createPlayersView({ document, run, notify }) {
       if (rewardStatus.textContent !== reward.summary) rewardStatus.textContent = reward.summary;
       rewardStatus.title = reward.title;
       rewardStatus.classList.toggle('claimed', reward.claimed);
+      autoClips[slotId].render({ channelId: slot.channelId, settings: state.autoClipSettings?.[slot.channelId], activity: autoClipForSlot(state.autoClips, slot),
+        available: !snapshot.preview && snapshot.initialized, pending: working || pending.has(`auto-clip-${slot.channelId}`) });
     });
   }
 
@@ -148,5 +156,5 @@ export function createPlayersView({ document, run, notify }) {
       if (getSlot(slotId).channelId) { event.preventDefault(); focusedSlot = slotId; run('audio', 'selectAudio', slotId); }
     } else if (event.code === 'KeyM') { event.preventDefault(); run('audio', 'selectAudio', null); }
   });
-  return { render, cards, focusSlot(slotId) { focusedSlot = slotId; }, dispose: events.dispose };
+  return { render, cards, focusSlot(slotId) { focusedSlot = slotId; }, dispose() { events.dispose(); for (const control of autoClips) control.dispose(); } };
 }

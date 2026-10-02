@@ -1,6 +1,7 @@
 import { createDom, createEventScope, setText as text } from '../shared/ui/dom.mjs';
 import { presentation, slotIds, letters, ordinals, layouts, getSlot as findSlot } from '../shared/ui/model.mjs';
 import { connected as isConnected, paired as isPaired, unavailable as isUnavailable, saving as isSaving, canSave as canSaveClip } from './state.mjs';
+import { autoClipForSlot, createAutoClipControls } from '../shared/ui/auto-clips.mjs';
 
 export function createSlotsView({ document, run }) {
   const { $, $$, element: node, actionButton } = createDom(document);
@@ -14,6 +15,7 @@ export function createSlotsView({ document, run }) {
   const saving = slotId => isSaving(snapshot.state, slotId);
   const canSave = slotId => canSaveClip(snapshot, slotId);
   const selectedSeconds = () => presentation.clipSeconds(snapshot.state.clipSeconds);
+  const autoClips = [];
   for (const slotId of [2, 3]) {
     const card = $('#slot-1').cloneNode(true);
     card.id = `slot-${slotId}`;
@@ -36,6 +38,10 @@ export function createSlotsView({ document, run }) {
     reward.setAttribute('role', 'status');
     reward.setAttribute('aria-live', 'polite');
     card.append(reward);
+    const autoClip = createAutoClipControls({ document, label: `방송 ${letters[slotId]}`,
+      onApply: argument => run('setAutoClipSettings', argument, '자동 저장 설정을 적용했어요.') });
+    autoClips.push(autoClip);
+    card.append(autoClip.element);
   }
   function render(next) {
     snapshot = next;
@@ -98,6 +104,8 @@ export function createSlotsView({ document, run }) {
       text(rewardStatus, reward.summary);
       rewardStatus.title = reward.title;
       rewardStatus.classList.toggle('claimed', reward.claimed);
+      autoClips[slotId].render({ channelId: item.channelId, settings: state.autoClipSettings?.[item.channelId], activity: autoClipForSlot(state.autoClips, item),
+        available: connected(), pending });
     }
     const mute = $('#mute-button');
     const allMuted = state.audioSlot === null || state.audioSlot === undefined;
@@ -140,5 +148,5 @@ export function createSlotsView({ document, run }) {
     event.target.checked = snapshot.state.rewardSettings?.enabled === true;
     run('setAutoRewards', enabled);
   });
-  return { render, dispose: events.dispose };
+  return { render, dispose() { events.dispose(); for (const control of autoClips) control.dispose(); } };
 }

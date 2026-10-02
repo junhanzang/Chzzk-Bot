@@ -13,6 +13,7 @@ const { AuthSession, trustedRemote } = require('../lib/auth-session.cjs');
 const { ProfileStore } = require('../lib/profile-store.cjs');
 const { PlayerManager } = require('../lib/player-manager.cjs');
 const { RecordingService } = require('../lib/recording-service.cjs');
+const { AutoClipService } = require('../lib/auto-clip-service.cjs');
 
 const channelA = 'a'.repeat(32), channelB = 'b'.repeat(32);
 const mainPath = path.resolve(__dirname, '..', 'main.cjs');
@@ -107,8 +108,16 @@ async function boot(savedSettings, { packaged = false } = {}) {
     './lib/auth-session.cjs': { AuthSession, trustedRemote },
     './lib/profile-store.cjs': { ProfileStore: class extends ProfileStore { constructor(directory) { super(directory, { fileSystem: fileApi }); } } },
     './lib/player-manager.cjs': { PlayerManager }, './lib/recording-service.cjs': { RecordingService },
+    './lib/auto-clip-service.cjs': { AutoClipService: class extends AutoClipService { constructor(options) { super({ ...options, intervalMs: 0 }); } } },
+    './lib/chat-host.cjs': { ChatHost: class { attach() {} detach() {} close() {} } },
     'ffmpeg-static': path.join(profile, 'fake-ffmpeg.exe')
   };
+  const libraryModule = { exports: {} };
+  vm.runInNewContext(fs.readFileSync(path.join(path.dirname(mainPath), 'lib', 'clip-library.cjs'), 'utf8'), {
+    module: libraryModule,
+    require(name) { return name.startsWith('./') ? modules[`./lib/${path.basename(name)}`] : require(name); }
+  });
+  modules['./lib/clip-library.cjs'] = libraryModule.exports;
   const controllerModule = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(path.dirname(mainPath), 'lib', 'desk-controller.cjs'), 'utf8'), {
     module: controllerModule,
@@ -139,6 +148,20 @@ test('packaged startup uses the external FFmpeg executable without an ASAR spawn
   assert.equal(f.replay.ffmpegPath, path.join(f.profile, 'resources', 'ffmpeg', 'ffmpeg.exe'));
   assert.equal((await f.invoke('getState')).ffmpegAvailable, true);
   assert.equal(f.views.length, 0);
+});
+
+test('automatic clip preferences persist without starting playback and browser chat cannot target a desktop slot', async () => {
+  const f = await boot(settings(['desktop', 'browser']));
+  await f.invoke('setAutoClipSettings', { channelId: channelA, enabled: true, keywords: ['우와'], chatSpike: false });
+  const state = await f.browserHandlers.getState();
+  assert.equal(state.autoClipSettings[channelA].enabled, true);
+  assert.equal(state.autoClips[0].status, 'needs-buffer');
+  assert.equal(f.starts.length, 0);
+  const persisted = JSON.parse(f.disk.get(path.join(f.profile, 'settings.json')));
+  assert.deepEqual(persisted.autoClipSettings[channelA].keywords, ['우와']);
+  await assert.rejects(f.invoke('setAutoClipSettings', { channelId: channelA, enabled: true, keywords: [], chatSpike: false }), /선택/);
+  await assert.rejects(f.browserHandlers.submitChatBatch({ slotId: 0, channelId: channelA, generation: 'stale', events: [], sourceStatus: 'watching' }), /방송을 먼저/);
+  assert.equal((await f.browserHandlers.submitChatBatch({ slotId: 1, channelId: channelB, generation: 'stale', events: [], sourceStatus: 'watching' })).accepted, false);
 });
 
 test('restored browser slots never instantiate or reload an embedded player', async () => {

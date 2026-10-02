@@ -17,7 +17,7 @@ test('only actual CHZZK live/channel links are accepted', () => {
 test('corrupt saved state cannot restore unknown slots, duplicate channels or audio/recording', () => {
   const state = normalizeSettings({ channels: [null, { id, name: '\nhello' }, { id, name: 'duplicate' }, { id: 'bad' }],
     slots: [id, 'unknown'], audioSlot: 0, recording: true });
-  const defaults = { layout: 'side-by-side', mainSlot: 0, clipSeconds: 30, rewardSettings: { enabled: false } };
+  const defaults = { layout: 'side-by-side', mainSlot: 0, clipSeconds: 30, rewardSettings: { enabled: false }, autoClipSettings: {} };
   assert.deepEqual(state, { channels: [{ id, name: 'hello' }], slots: [id, null, null, null], ...defaults });
   assert.deepEqual(normalizeSettings(null), { channels: [], slots: [null, null, null, null], ...defaults });
   assert.deepEqual(normalizeSettings({ channels: [{ id: [id] }] }), { channels: [], slots: [null, null, null, null], ...defaults });

@@ -15,6 +15,8 @@ export function idleReplay() { return { state: 'idle', bufferedSeconds: 0 }; }
 export function blankRemote() {
   return { channels: [], slots: SLOT_IDS.map(slotId => ({ slotId, channelId: null, replay: idleReplay() })),
     layout: 'side-by-side', mainSlot: 0, clipSeconds: 30,
+    autoClipSettings: {}, autoClips: SLOT_IDS.map(slotId => ({ slotId, channelId: null, generation: null,
+      status: 'unavailable', message: '자동 클립은 데스크톱 앱을 연결하면 사용할 수 있어요.' })),
     clips: [], savingSlots: [], ffmpegAvailable: false, auth: { status: 'signed_out' } };
 }
 
@@ -36,8 +38,17 @@ export function sanitizeRemote(value, model) {
     clips: (Array.isArray(value.clips) ? value.clips : []).filter(item => item && typeof item.id === 'string').slice(0, 1000).map(item => ({
       id: item.id, fileName: typeof item.fileName === 'string' ? item.fileName : '', title: model.cleanTitle(item.title),
       channelId: typeof item.channelId === 'string' ? item.channelId : '', createdAt: item.createdAt,
-      duration: Number(item.duration) || 0
+      duration: Number(item.duration) || 0,
+      ...(['keyword', 'chat-spike'].includes(item.trigger) ? { trigger: item.trigger } : {})
     })),
+    autoClipSettings: model.normalizeAutoClipSettings(value.autoClipSettings, channels),
+    autoClips: SLOT_IDS.map(slotId => {
+      const source = (Array.isArray(value.autoClips) ? value.autoClips : []).find(item => item?.slotId === slotId) || {};
+      return { slotId, channelId: channels.some(channel => channel.id === source.channelId) ? source.channelId : null,
+        generation: typeof source.generation === 'string' && source.generation.length <= 128 ? source.generation : null,
+        status: typeof source.status === 'string' ? source.status.slice(0, 40) : 'unavailable',
+        message: typeof source.message === 'string' ? source.message.slice(0, 300) : '' };
+    }),
     savingSlots: (Array.isArray(value.savingSlots) ? value.savingSlots : []).filter(id => SLOT_IDS.includes(id)),
     layout: LAYOUTS.includes(value.layout) ? value.layout : 'side-by-side',
     mainSlot: SLOT_IDS.includes(value.mainSlot) ? value.mainSlot : 0,

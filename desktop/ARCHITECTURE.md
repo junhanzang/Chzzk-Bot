@@ -12,12 +12,20 @@
 | `../browser-extension/shared/presentation.js` | 검색, 보관 상태·통나무·클립 표시 문구 | DOM 변경, 파일·네트워크 |
 | `../browser-extension/shared/rewards.js` | 공식 시청 보상 버튼 감지, 중복 수령 방지, 취소·결과 확인 | 쿠키·앱 토큰, 플랫폼별 IPC |
 | `main.cjs` | Electron 환경 초기화, 서비스 조립, IPC 권한 검사, 종료 연결 | 플레이어·녹화 상태 직접 변경, 화면 렌더링 |
-| `lib/desk-controller.cjs` | 설정·즐겨찾기·클립 인덱스, 사용자 명령 조합, 슬롯별 작업 잠금 | 직접 WebContentsView 조작, FFmpeg 프로세스 제어 |
+| `lib/desk-controller.cjs` | 설정·즐겨찾기, 사용자 명령 조합, 슬롯별 작업 잠금 | 직접 WebContentsView 조작, FFmpeg 프로세스 제어 |
+| `lib/clip-library.cjs` | 클립 메타데이터 정리·등록·복원, 이전 경로와 파일 열기 | FFmpeg, 채팅 감지 |
 | `lib/player-manager.cjs` | 네이티브 플레이어 소유권·페이지 상태·소리·크기·통나무 연결 수명 | 프로필 파일, 녹화 구현 |
 | `lib/recording-service.cjs` | 방송 재생 정보, 미디어 중계 주소 수명, 녹화 준비·저장 상태·종료 | UI, 즐겨찾기·배치 설정 변경 |
 | `lib/auth-session.cjs` | 로그인 창 수명, 허용된 이동, 로그인 상태 조회·중복 요청·취소 | 녹화·플레이어 직접 제어 |
 | `lib/profile-store.cjs` | 고정된 설정·클립 문서 읽기, 스냅샷 순차 저장, 임시 파일 교체 | Electron 창, 사용자 화면 상태 |
-| `lib/replay-buffer.cjs`, `lib/media-gateway.cjs` | FFmpeg 구간 보관과 제한된 미디어 중계 | UI, 앱 설정 변경 |
+| `lib/replay-buffer.cjs` | 녹화 세션·세대, recorder 프로세스·중단, 수동/범위 저장 조합 | UI, 앱 설정 변경 |
+| `lib/segment-store.cjs` | 완료 manifest·파일, 시간·용량 제한, 연속 구간 선택·스냅샷 | UI, 채팅, MP4 프로세스 |
+| `lib/clip-exporter.cjs` | 스냅샷 MP4 변환, 시간 초과·취소, 임시 파일의 원자적 교체 | 진행 중 녹화 파일, 설정 |
+| `lib/media-gateway.cjs` | 로그인 세션을 사용하는 제한된 미디어 중계 | UI, 앱 설정 변경 |
+| `lib/auto-clip-service.cjs`, `lib/chat-trigger.cjs` | 채팅 통계, 쿨다운·한도·세대, 미디어 진행에 따른 대기 범위 | 페이지·파일·네트워크 직접 접근 |
+| `lib/chat-host.cjs` | 격리된 페이지의 읽기 전용 observer 수명, 고정된 bounded batch 조회 | 임의 페이지 IPC·명령 |
+| `../browser-extension/shared/chat-observer.js` | 공식 채팅 DOM 관찰, 기존 메시지 seed, 중복 제거·제한된 배치 | 로그인·쿠키·앱 연결 토큰 |
+| `../browser-extension/lib/chat-service.js`, `content/chat-adapter.js` | 관리 탭·채널·세대 검증, 고정 채팅 전달·heartbeat | 임의 RPC 메서드, 페이지에 연결 토큰 전달 |
 | `ui/renderer.mjs` | 앱 화면 모듈 생성, 상태 구독 연결, 종료 정리 | 직접 명령 처리·DOM 영역 렌더링 |
 | `ui/controller.mjs` | 데스크톱 화면 상태, 실행 중 명령, IPC 상태 구독·해제 | DOM 렌더링, 직접 파일 접근 |
 | `ui/`의 뷰 모듈 | 담당 영역의 DOM·검색 캐시·이벤트, 플레이어 위치 측정 | 백엔드 서비스, 로그인 쿠키 |
@@ -71,6 +79,9 @@ flowchart TD
 4. 보유량 조회 실패를 0으로 표시하지 않고, 수령 버튼 클릭만으로 성공을 기록하지 않는다.
 5. 다른 탭이 들어온 Chrome 창을 확장 전용 창으로 간주하지 않는다. 같은 창을 반복 배치해도 크기가 계속 줄지 않아야 한다.
 6. 설정 저장은 요청 당시 스냅샷을 순서대로 저장한다. 한 번 실패한 뒤의 저장도 다시 시도할 수 있어야 한다.
+7. 자동 클립의 채팅 관찰 세대와 녹화 세대는 별개다. 설정 변경·채널 전환·녹화 종료 후 이전 세대의 메시지와 대기 구간을 적용하지 않는다.
+8. 자동 저장은 `mark()`로 확인한 완료 미디어 시간을 기준으로 잡는다. `saveRange()`는 전체 범위가 연속적으로 남아 있어야 하며 부족한 분량을 잘라 저장하지 않는다. 수동 최근 구간 저장의 기존 동작은 유지한다.
+9. 채팅 본문은 감지 후 버리고, 카운트와 제한된 메시지 ID만 메모리에 남긴다. 인덱스에는 고정된 감지 유형만 저장한다. 처음 로드·컨테이너 교체 때 보이는 채팅은 과거 기록으로 처리한다.
 
 ## 확인 방법
 
@@ -99,6 +110,6 @@ node scripts/check-desk.cjs
 
 파일을 나누거나 옮기면 이 검사와 HTML 진입점·패키징 검사도 함께 통과해야 한다. `.cjs`, `.js`, `.mjs`는 모두 `npm run check`의 문법 검사 대상이다.
 
-2026-10-02 구조 분리 후 JavaScript 72개 문법 검사, 데스크톱 98개와 확장·공통 UI 74개 테스트가 통과했다. 실제 RPC 클라이언트를 통한 합성 영상 저장과 MP4 영상·음성 디코딩도 통과했다. 화면 컨트롤러·뷰 검사는 가짜 DOM·플랫폼 객체를 사용하며 실제 Electron·Chrome UI를 실행하지 않는다.
+자동 저장을 수정했을 때는 `npm run test:auto-clip --prefix desktop`도 실행한다. 이 검사는 가짜 채팅 감지와 실제 FFmpeg 합성 영상을 연결해 후행 영상 대기·중복 방지·세대 교체·MP4 영상과 음성 디코딩을 검증한다. 화면 컨트롤러·뷰 검사는 가짜 DOM·플랫폼 객체를 사용하며 실제 Electron·Chrome UI를 실행하지 않는다.
 
 배포 코드는 `electron-builder.cjs`와 `scripts/verify-package.cjs`(앱), `../browser-extension/scripts/package.cjs`(확장), `../scripts/release-bundle.cjs`(버전·릴리스 파일·체크섬)로 나뉜다. 배포 설정이나 상대 경로를 변경하면 실제 패키징 검사도 통과해야 한다. [CI/CD와 배포 안내](../docs/RELEASING.md)

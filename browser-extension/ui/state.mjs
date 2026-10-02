@@ -1,7 +1,7 @@
 import { slotIds, getSlot } from '../shared/ui/model.mjs';
 
 export function initialState() {
-  return { channels: [], slots: slotIds.map(slotId => ({ slotId })), audioSlot: null, clips: [], savingSlots: [], ffmpegAvailable: false, connection: { status: 'standalone' }, auth: { status: 'unknown' }, layout: 'side-by-side', mainSlot: 0, rewardSettings: { enabled: false }, rewards: [], clipSeconds: 30 };
+  return { channels: [], slots: slotIds.map(slotId => ({ slotId })), audioSlot: null, clips: [], savingSlots: [], ffmpegAvailable: false, connection: { status: 'standalone' }, auth: { status: 'unknown' }, layout: 'side-by-side', mainSlot: 0, rewardSettings: { enabled: false }, rewards: [], clipSeconds: 30, autoClipSettings: {}, autoClips: [] };
 }
 export const connected = state => state.connection.status === 'connected';
 export const paired = state => state.connection.status !== 'standalone';

@@ -50,7 +50,8 @@ export function createPanelController({ sendMessage, document, onNotice, timers 
     publish();
     let succeeded = false;
     try {
-      await send(method, arg);
+      const result = await send(method, arg);
+      if (!disposed && Array.isArray(result?.channels) && Array.isArray(result.slots)) accept(result);
       succeeded = true;
       if (success && !disposed) onNotice(success);
     } catch (error) { if (!disposed) onNotice(error.message || '요청을 처리하지 못했어요.', true); }

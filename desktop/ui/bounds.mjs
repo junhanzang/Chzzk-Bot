@@ -38,7 +38,8 @@ export function createPlayerBounds({ document, window, cards, sendBounds, onErro
     });
   }
   const observer = new window.ResizeObserver(request);
-  for (const { surface } of surfaces) observer.observe(surface);
+  // Opening a footer can move another player without resizing its surface.
+  for (const { card, surface } of surfaces) { observer.observe(card); observer.observe(surface); }
   events.on(window, 'resize', request);
   events.on(document, 'scroll', request, true);
   return {

@@ -1,7 +1,7 @@
 import { slotIds, getSlot } from '../../browser-extension/shared/ui/model.mjs';
 
 export function initialState() {
-  return { channels: [], slots: slotIds.map(slotId => ({ slotId })), audioSlot: null, clips: [], savingSlots: [], ffmpegAvailable: false, version: '', layout: 'side-by-side', mainSlot: 0, rewardSettings: { enabled: false }, rewards: [], clipSeconds: 30 };
+  return { channels: [], slots: slotIds.map(slotId => ({ slotId })), audioSlot: null, clips: [], savingSlots: [], ffmpegAvailable: false, version: '', layout: 'side-by-side', mainSlot: 0, rewardSettings: { enabled: false }, rewards: [], clipSeconds: 30, autoClipSettings: {}, autoClips: [] };
 }
 
 export function isSaving(snapshot, slotId) {

@@ -23,6 +23,7 @@ class RecordingService extends EventEmitter {
   }
 
   status(slotId) { return this.preparing.has(slotId) ? { state: 'starting', bufferedSeconds: 0 } : this.replay.status(slotId); }
+  mark(slotId) { return this.preparing.has(slotId) || this.quitting ? null : this.replay.mark?.(slotId); }
   get savingSlots() { return [...this.saving]; }
   release(slotId) { this.leases.get(slotId)?.close(); this.leases.delete(slotId); }
 
@@ -59,12 +60,22 @@ class RecordingService extends EventEmitter {
 
   async save(slotId, seconds, commit) {
     validClipSeconds(seconds);
+    return this.exportClip(slotId, () => this.replay.save(slotId, seconds), commit);
+  }
+
+  async saveRange(slotId, range, trigger, commit) {
+    if (!['keyword', 'chat-spike'].includes(trigger)) throw new Error('감지 종류가 올바르지 않습니다.');
+    return this.exportClip(slotId, () => this.replay.saveRange(slotId, range), commit, trigger);
+  }
+
+  async exportClip(slotId, exportFile, commit, trigger) {
     if (!this.storageReady) throw new Error('동영상 폴더에 접근할 수 없어 저장하지 못했습니다. 폴더 접근 권한을 확인한 뒤 앱을 다시 열어 주세요.');
+    if (this.saving.has(slotId)) throw new Error('이 방송의 클립을 저장 중입니다.');
     this.saving.add(slotId); this.emit('change');
     try {
-      const clip = await this.replay.save(slotId, seconds);
+      const clip = await exportFile();
       const record = { id: clip.id, fileName: path.basename(clip.fileName || clip.path), title: cleanTitle(clip.title, '방송'),
-        channelId: clip.channelId, createdAt: clip.createdAt, duration: clip.duration };
+        channelId: clip.channelId, createdAt: clip.createdAt, duration: clip.duration, ...(trigger ? { trigger } : {}) };
       await commit(record);
       return record;
     } finally { this.saving.delete(slotId); this.emit('change'); }

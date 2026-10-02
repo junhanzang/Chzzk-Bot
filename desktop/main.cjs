@@ -11,6 +11,7 @@ const { resolveProfilePath } = require('./lib/profile-path.cjs');
 const { BrowserBridge } = require('./lib/browser-bridge.cjs');
 const { createBrowserHandlers } = require('./lib/browser-actions.cjs');
 const { RewardsHost } = require('./lib/rewards-host.cjs');
+const { ChatHost } = require('./lib/chat-host.cjs');
 const { ProfileStore } = require('./lib/profile-store.cjs');
 const { AuthSession } = require('./lib/auth-session.cjs');
 const { PlayerManager } = require('./lib/player-manager.cjs');
@@ -83,7 +84,9 @@ app.whenReady().then(async () => {
     backgroundColor: '#101319', autoHideMenuBar: true, show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
-  const players = new PlayerManager({ window: win, WebContentsView, partition: remotePartition, rewards });
+  const chat = new ChatHost({ context: slotId => controller?.autoClips.context(slotId),
+    onBatch: batch => controller?.autoClips.submit(batch), onDetach: slotId => controller?.autoClips.reset(slotId) });
+  const players = new PlayerManager({ window: win, WebContentsView, partition: remotePartition, rewards, chat });
   players.on('login-requested', () => authSession.open());
   players.on('external-requested', url => { shell.openExternal(url).catch(() => {}); });
   authSession.on('signed-in', () => players.reloadAll());

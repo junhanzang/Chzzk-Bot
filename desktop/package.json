@@ -1,6 +1,6 @@
 {
   "name": "chzzk-desk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "치지직 멀티뷰, 통나무 자동 수령과 로컬 리플레이 보관함",
   "author": "Chzzk Desk contributors",
@@ -15,6 +15,7 @@
     "test:replay": "node scripts/replay-integration.cjs",
     "test:browser-replay": "node scripts/replay-integration.cjs --browser-bridge",
     "test:clip-lengths": "node scripts/replay-integration.cjs --browser-bridge --all-durations",
+    "test:auto-clip": "node scripts/auto-clip-integration.cjs",
     "test:session-replay": "node scripts/session-replay-integration.cjs",
     "test:auth": "node scripts/auth-smoke.cjs",
     "pack:win": "electron-builder --config electron-builder.cjs --win --x64 --dir --publish never",

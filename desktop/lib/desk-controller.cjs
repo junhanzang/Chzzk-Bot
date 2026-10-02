@@ -1,32 +1,22 @@
 'use strict';
 
 const { EventEmitter } = require('node:events');
-const path = require('node:path');
-const { parseChannel, cleanTitle, normalizeSettings, validSlot, SLOT_IDS, LAYOUTS, validClipSeconds } = require('./channels.cjs');
-const { prepareClipStorage, validFileName } = require('./clip-storage.cjs');
-const { openLocalPath } = require('./open-local-path.cjs');
+const { parseChannel, cleanTitle, normalizeSettings, normalizeAutoClipConfig, validSlot, SLOT_IDS, LAYOUTS, validClipSeconds } = require('./channels.cjs');
+const { ClipLibrary, loadClipLibrary } = require('./clip-library.cjs');
+const { AutoClipService } = require('./auto-clip-service.cjs');
 
 async function loadDeskProfile({ store, dataDir, preferredClipsDir }) {
   const stored = await store.load();
   const settings = normalizeSettings(stored.settings);
-  const indexedClips = (Array.isArray(stored.clips) ? stored.clips : []).filter(clip => clip && typeof clip.id === 'string' && validFileName(clip.fileName));
-  const storage = await prepareClipStorage({ preferredClipsDir, sources: [
-    { clipsDir: preferredClipsDir, clips: indexedClips }, { clipsDir: path.join(dataDir, 'clips'), clips: indexedClips }
-  ] });
-  const legacyFiles = new Map();
-  const clips = storage.clips.map(clip => {
-    if (clip.storagePath) legacyFiles.set(clip.id, clip.storagePath);
-    return { id: clip.id, fileName: clip.fileName, title: cleanTitle(clip.title, '방송'),
-      originalId: typeof clip.originalId === 'string' && clip.originalId ? clip.originalId : undefined,
-      channelId: clip.channelId, createdAt: clip.createdAt, duration: clip.duration };
-  });
+  const storage = await loadClipLibrary({ indexed: stored.clips, dataDir, preferredClipsDir });
+  const { clips, legacyFiles } = storage;
   await store.save({ settings, clips });
   const notice = !storage.ready ? '동영상 폴더에 접근하지 못했습니다. 폴더 권한을 확인한 뒤 앱을 다시 열어 주세요.'
     : storage.warnings.length ? '일부 이전 클립을 복사하지 못했습니다. 기존 파일은 보존되어 있습니다.' : null;
   return { settings, clips, legacyFiles, clipsDir: storage.clipsDir, storageReady: storage.ready, notice };
 }
 
-const COMMANDS = Object.freeze(['getState', 'refreshAuth', 'login', 'setClipSeconds', 'setAutoRewards', 'setLayout',
+const COMMANDS = Object.freeze(['getState', 'refreshAuth', 'login', 'setClipSeconds', 'setAutoRewards', 'setAutoClipSettings', 'submitChatBatch', 'setLayout',
   'addChannel', 'removeChannel', 'assignSlot', 'clearSlot', 'selectAudio', 'setBuffer', 'saveClip', 'reloadSlot',
   'openExternal', 'openClip', 'showClipsFolder', 'setPlayerBounds']);
 
@@ -47,6 +37,15 @@ class DeskController extends EventEmitter {
     this.openPath = openPath;
     this.busy = new Set();
     this.removingChannels = new Set();
+    this.settings.autoClipSettings ||= {};
+    this.library = new ClipLibrary({ clips: this.clips, clipsDir: this.clipsDir, legacyFiles: this.legacyFiles,
+      openPath, persist: () => this.persist() });
+    this.autoClips = new AutoClipService({ recordings,
+      assignment: slotId => ({ channelId: this.settings.slots[slotId] }),
+      config: channelId => this.settings.autoClipSettings[channelId], isBusy: slotId => this.busy.has(slotId),
+      save: (slotId, range, trigger) => this.slotAction(slotId, () => this.recordings.saveRange(slotId, range, trigger,
+        async record => { await this.library.register(record); this.publish(); })) });
+    this.autoClips.on('change', () => this.publish());
     for (const service of [players, recordings, auth]) service.on('change', () => this.emit('change'));
     for (const service of [players, auth]) service.on('notice', (...args) => this.emit('notice', ...args));
     players.on('shortcut', command => {
@@ -68,6 +67,7 @@ class DeskController extends EventEmitter {
     return {
       version: this.version, channels: settings.channels, audioSlot: this.players.audioSlot, clips: this.clips.slice(0, 100),
       layout: settings.layout, mainSlot: settings.mainSlot, clipSeconds: settings.clipSeconds,
+      autoClipSettings: settings.autoClipSettings, autoClips: this.autoClips.snapshot(),
       rewardSettings: { enabled: settings.rewardSettings.enabled },
       rewards: SLOT_IDS.map(slotId => ({ slotId, ...(this.players.rewardStatus(slotId) || {
         channelId: settings.slots[slotId], balance: null,
@@ -93,6 +93,7 @@ class DeskController extends EventEmitter {
   }
 
   async closeSlot(slotId) {
+    this.autoClips.reset(slotId);
     try { await this.players.close(slotId, () => this.recordings.stop(slotId)); }
     finally {
       this.settings.slots[slotId] = null;
@@ -121,6 +122,26 @@ class DeskController extends EventEmitter {
     await this.persist(); this.publish(); return this.getState();
   }
 
+  async setAutoClipSettings(arg) {
+    const channelId = parseChannel(arg?.channelId);
+    if (!this.settings.channels.some(channel => channel.id === channelId)) throw new Error('즐겨찾기에 없는 채널입니다.');
+    if (typeof arg?.enabled !== 'boolean' || typeof arg?.chatSpike !== 'boolean' || !Array.isArray(arg?.keywords) ||
+        arg.keywords.length > 10 || arg.keywords.some(value => typeof value !== 'string' || value.length > 40)) {
+      throw new Error('키워드는 최대 10개, 각각 40자까지 입력해 주세요.');
+    }
+    const config = normalizeAutoClipConfig(arg);
+    if (config.enabled && !config.chatSpike && !config.keywords.length) throw new Error('키워드 또는 채팅 급증 감지를 선택해 주세요.');
+    this.settings.autoClipSettings[channelId] = config;
+    this.autoClips.tick();
+    await this.persist(); this.publish(); return this.getState();
+  }
+
+  submitChatBatch(arg) {
+    validSlot(arg?.slotId);
+    if (this.settings.playbackModes?.[arg.slotId] !== 'browser' || this.settings.slots[arg.slotId] !== arg.channelId) return { accepted: false };
+    return this.autoClips.submit(arg);
+  }
+
   async setLayout({ layout, mainSlot = this.settings.mainSlot } = {}) {
     if (!LAYOUTS.includes(layout)) throw new Error('올바른 화면 배치를 선택해 주세요.');
     validSlot(mainSlot); this.settings.layout = layout; this.settings.mainSlot = mainSlot;
@@ -147,6 +168,7 @@ class DeskController extends EventEmitter {
     try {
       for (const slotId of slots) await this.closeSlot(slotId);
       this.settings.channels = this.settings.channels.filter(c => c.id !== id);
+      delete this.settings.autoClipSettings[id];
       await this.persist(); return this.getState();
     } finally {
       slots.forEach(slotId => this.busy.delete(slotId)); this.removingChannels.delete(id); this.publish();
@@ -174,6 +196,7 @@ class DeskController extends EventEmitter {
 
   setBuffer({ slotId, enabled } = {}) {
     return this.slotAction(slotId, async () => {
+      this.autoClips.reset(slotId);
       await this.recordings.setBuffer(slotId, enabled, this.settings.slots[slotId]);
       return this.getState();
     });
@@ -181,7 +204,7 @@ class DeskController extends EventEmitter {
 
   saveClip({ slotId, seconds = this.settings.clipSeconds } = {}) {
     return this.slotAction(slotId, () => this.recordings.save(slotId, seconds, async record => {
-      this.clips.unshift(record); await this.persist(); this.publish();
+      await this.library.register(record); this.publish();
     }));
   }
 
@@ -199,16 +222,14 @@ class DeskController extends EventEmitter {
   }
 
   async openClip(id) {
-    const clip = this.clips.find(item => item.id === id);
-    if (!clip || !validFileName(clip.fileName)) throw new Error('클립을 찾지 못했습니다.');
-    const file = this.legacyFiles.get(id) || path.join(this.clipsDir, clip.fileName);
-    await openLocalPath(file, { kind: 'file', openPath: this.openPath });
+    return this.library.open(id);
   }
 
-  showClipsFolder() { return openLocalPath(this.clipsDir, { kind: 'directory', openPath: this.openPath }); }
+  showClipsFolder() { return this.library.showFolder(); }
   setPlayerBounds(bounds) { this.players.setBounds(bounds); }
-  beginShutdown() { this.players.beginShutdown(); this.recordings.beginShutdown(); }
+  beginShutdown() { this.autoClips.close(); this.players.beginShutdown(); this.recordings.beginShutdown(); }
   async shutdown() {
+    this.autoClips.close();
     await this.recordings.shutdown();
     await this.store.flush().catch(() => {});
     this.players.destroyAll();

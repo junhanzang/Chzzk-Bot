@@ -5,6 +5,7 @@ const { validSlot } = require('./channels.cjs');
 function publicState(value) {
   return { version: value.version, channels: value.channels, slots: value.slots, clips: value.clips,
     layout: value.layout, mainSlot: value.mainSlot, clipSeconds: value.clipSeconds,
+    autoClipSettings: value.autoClipSettings || {}, autoClips: value.autoClips || [],
     audioSlot: null, savingSlots: value.savingSlots, ffmpegAvailable: value.ffmpegAvailable,
     auth: { status: value.auth?.status || 'checking' } };
 }
@@ -25,6 +26,8 @@ function createBrowserHandlers({ actions, isQuitting = () => false }) {
     clearSlot: slotId => { validSlot(slotId); return actions.clearSlot(slotId); },
     setLayout: arg => actions.setLayout({ layout: arg?.layout, mainSlot: arg?.mainSlot }),
     setClipSeconds: seconds => actions.setClipSeconds(seconds),
+    setAutoClipSettings: arg => actions.setAutoClipSettings(arg),
+    submitChatBatch: arg => { browserSlot(arg); return actions.submitChatBatch(arg); },
     setBuffer: arg => actions.setBuffer({ slotId: browserSlot(arg), enabled: arg?.enabled }),
     saveClip: arg => actions.saveClip({ slotId: browserSlot(arg), seconds: arg?.seconds }),
     openClip: id => actions.openClip(id),

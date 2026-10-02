@@ -1,5 +1,6 @@
 import { createDom, createEventScope } from '../../browser-extension/shared/ui/dom.mjs';
 import { presentation } from '../../browser-extension/shared/ui/model.mjs';
+import { autoClipBadge } from '../../browser-extension/shared/ui/auto-clips.mjs';
 
 export function createClipsView({ document, run }) {
   const { $, element } = createDom(document);
@@ -27,7 +28,10 @@ export function createClipsView({ document, run }) {
       const title = element('strong', '', clip.title || clip.fileName || '저장한 클립');
       title.title = clip.fileName || clip.title || '';
       description.append(title);
-      description.append(element('small', '', presentation.formatClipMeta(clip)));
+      const meta = element('small', '', presentation.formatClipMeta(clip));
+      const badge = autoClipBadge(clip.trigger);
+      if (badge) meta.append(element('span', 'auto-clip-badge', badge));
+      description.append(meta);
       row.append(description);
       const open = element('button', 'clip-open', '열기 ↗');
       open.type = 'button';

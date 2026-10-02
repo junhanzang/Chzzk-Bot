@@ -5,12 +5,13 @@ const { SLOT_IDS, validSlot } = require('./channels.cjs');
 const { trustedRemote } = require('./auth-session.cjs');
 
 class PlayerManager extends EventEmitter {
-  constructor({ window, WebContentsView, partition, rewards }) {
+  constructor({ window, WebContentsView, partition, rewards, chat }) {
     super();
     this.window = window;
     this.View = WebContentsView;
     this.partition = partition;
     this.rewards = rewards;
+    this.chat = chat;
     this.views = new Map();
     this.pages = new Map();
     this.audioSlot = null;
@@ -81,12 +82,13 @@ class PlayerManager extends EventEmitter {
     });
     contents.on('did-start-loading', () => { if (current()) this.update(slotId, { pageStatus: 'loading', pageError: null }); });
     contents.on('did-start-navigation', (_event, _target, isInPlace, isMainFrame) => {
-      if (current() && isMainFrame && !isInPlace) this.rewards.detach(slotId);
+      if (current() && isMainFrame && !isInPlace) { this.rewards.detach(slotId); this.chat?.detach(slotId); }
     });
     contents.on('did-finish-load', () => {
       if (!current()) return;
       this.pages.set(slotId, { pageStatus: 'ready', pageError: null }); this.applyAudio(); this.emit('change');
       void this.rewards.attach(slotId, contents, channelId);
+      void this.chat?.attach(slotId, contents, channelId);
     });
     contents.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
       if (current() && isMainFrame && code !== -3) this.update(slotId, { pageStatus: 'error',
@@ -95,6 +97,7 @@ class PlayerManager extends EventEmitter {
     contents.on('render-process-gone', () => {
       if (!current()) return;
       this.rewards.detach(slotId);
+      this.chat?.detach(slotId);
       this.update(slotId, { pageStatus: 'error', pageError: '플레이어가 종료되었습니다. 새로고침해 주세요.' });
     });
     contents.loadURL(url).catch(() => {});
@@ -102,6 +105,7 @@ class PlayerManager extends EventEmitter {
 
   async close(slotId, beforeDestroy) {
     this.rewards.detach(slotId);
+    this.chat?.detach(slotId);
     const view = this.views.get(slotId);
     // Revoke ownership before waiting: a late load must not reattach rewards.
     this.views.delete(slotId);
@@ -139,7 +143,7 @@ class PlayerManager extends EventEmitter {
     }
   }
 
-  beginShutdown() { this.quitting = true; this.rewards.close(); }
+  beginShutdown() { this.quitting = true; this.rewards.close(); this.chat?.close(); }
   destroyAll() {
     for (const view of this.views.values()) if (!view.webContents.isDestroyed()) view.webContents.close();
     this.views.clear();

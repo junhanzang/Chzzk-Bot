@@ -3,6 +3,7 @@ import { DesktopConnection, idleReplay, blankRemote } from './desktop-connection
 import { DeskStorage } from './desk-storage.js';
 import { ManagedTabs } from './managed-tabs.js';
 import { RewardService } from './reward-service.js';
+import { ChatService } from './chat-service.js';
 import { WindowLayout } from './window-layout.js';
 
 export { parsePairCode } from './desktop-connection.js';
@@ -10,7 +11,7 @@ export { layoutBounds } from './window-layout.js';
 
 const CLIP_METHODS = new Set(['setBuffer', 'saveClip', 'openClip', 'showClipsFolder']);
 const ALL_METHODS = new Set(['getState', 'pair', 'disconnect', 'addChannel', 'removeChannel', 'assignSlot', 'clearSlot',
-  'selectAudio', 'focusSlot', 'arrangeWindows', 'setLayout', 'setAutoRewards', 'setClipSeconds', ...CLIP_METHODS]);
+  'selectAudio', 'focusSlot', 'arrangeWindows', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings', ...CLIP_METHODS]);
 
 export function panelSenderAllowed(sender, chromeApi) {
   return sender?.id === chromeApi.runtime.id && sender.url === chromeApi.runtime.getURL('panel.html') && !sender.tab?.incognito;
@@ -25,13 +26,18 @@ export class DeskController {
     this.desktop = new DesktopConnection({ model, storage: this.storage, timeoutMs, actionTimeoutMs,
       fetchImpl: (...args) => this.fetchImpl(...args) });
     this.tabs = new ManagedTabs({ chromeApi, model, storage: this.storage,
-      onOwnershipChange: async tabId => { this.rewards.forget(tabId); await this.rewards.notifyConfig(tabId); } });
+      onOwnershipChange: async tabId => { this.rewards.forget(tabId);
+        await Promise.all([this.rewards.notifyConfig(tabId), this.chat.notifyConfig(tabId)]); } });
     this.rewards = new RewardService({ chromeApi, model, timeoutMs, fetchImpl: (...args) => this.fetchImpl(...args),
       enabled: () => this.storage.preferences.autoRewards,
       resolveTab: async tabId => {
         const context = await this.tabs.resolveContext(tabId);
         return context && (!this.desktop.paired || this.desktop.remote.slots[context.slotId].channelId === context.channelId) ? context : null;
       } });
+    this.chat = new ChatService({ chromeApi, model, resolveTab: tabId => this.tabs.resolveContext(tabId),
+      readRemote: () => this.desktop.paired && this.desktop.status.status === 'connected' ? this.desktop.remote : null,
+      submit: batch => this.desktop.request('submitChatBatch', batch) });
+    this.chatRefreshAt = 0;
     this.windows = new WindowLayout(chromeApi);
     this.lastNotice = null;
     this.queue = Promise.resolve();
@@ -99,6 +105,7 @@ export class DeskController {
     await this.desktop.refresh();
     if (reconcile) await this.tabs.reconcile(this.assignments());
     await this.notifyChangedAssignments(previous);
+    await this.chat.notifyAll(this.tabs.tabIds());
   }
 
   async linkedMutation(method, arg) {
@@ -106,12 +113,30 @@ export class DeskController {
     const result = await this.desktop.mutate(method, arg);
     // Controlled commands retain old tab ownership until the command releases or reassigns it.
     await this.notifyChangedAssignments(previous);
+    await this.chat.notifyAll(this.tabs.tabIds());
     return result;
   }
 
   async handleRewardMessage(message, sender) {
     await this.initialize();
     return this.rewards.handleMessage(message, sender);
+  }
+
+  async handleChatMessage(message, sender) {
+    await this.initialize();
+    if (message?.method === 'getContext') {
+      if (!await this.chat.managedSender(sender)) return null;
+      // The panel can be closed. Coalesce context refreshes across all four tabs;
+      // chat batches themselves never fetch or persist another remote snapshot.
+      return this.enqueue(async () => {
+        if (this.desktop.paired && Date.now() - this.chatRefreshAt >= 5000) {
+          this.chatRefreshAt = Date.now();
+          await this.desktop.refresh().catch(() => {});
+        }
+        return this.chat.handleMessage(message, sender);
+      });
+    }
+    return this.chat.handleMessage(message, sender);
   }
 
   snapshot() {
@@ -124,6 +149,7 @@ export class DeskController {
       ffmpegAvailable: linked && this.desktop.status.status === 'connected' && base.ffmpegAvailable,
       layout: linked ? base.layout : preferences.layout, mainSlot: linked ? base.mainSlot : preferences.mainSlot,
       clipSeconds: linked ? base.clipSeconds : preferences.clipSeconds,
+      autoClipSettings: base.autoClipSettings, autoClips: base.autoClips,
       rewardSettings: { enabled: preferences.autoRewards },
       rewards: view.slots.map(slot => this.rewards.stateFor(slot.slotId, slot.channelId, slot.tabId)),
       connection: this.desktop.status, auth: base.auth, ...(this.lastNotice ? { notice: this.lastNotice } : {})
@@ -141,6 +167,7 @@ export class DeskController {
       // Pairing does not open Chrome tabs, replace desktop players or start recording.
       await this.tabs.inspect();
       await this.rewards.notifyAll(this.tabs.tabIds());
+      await this.chat.notifyAll(this.tabs.tabIds());
       return this.snapshot();
     }
     if (method === 'disconnect') {
@@ -150,6 +177,7 @@ export class DeskController {
         await this.storage.mergeChannels(channels);
       }
       await this.desktop.disconnect();
+      await this.chat.notifyAll(this.tabs.tabIds());
       await this.tabs.persist();
       return this.snapshot();
     }
@@ -203,6 +231,14 @@ export class DeskController {
       const seconds = this.model.validClipSeconds(arg);
       if (this.desktop.paired) await this.linkedMutation('setClipSeconds', seconds);
       else await this.storage.updatePreferences({ clipSeconds: seconds });
+    } else if (method === 'setAutoClipSettings') {
+      if (!this.desktop.paired) throw new Error('자동 클립은 데스크톱 앱을 연결하면 사용할 수 있어요.');
+      const channelId = this.model.parseChannel(arg?.channelId);
+      if (!this.channels().some(channel => channel.id === channelId)) throw new Error('즐겨찾기에 없는 채널입니다.');
+      // Keep user input intact for the desktop command's strict validation.
+      // The shared normalizer is for restored state, not silently shortening commands.
+      await this.linkedMutation('setAutoClipSettings', { channelId, enabled: arg.enabled,
+        keywords: arg.keywords, chatSpike: arg.chatSpike });
     } else if (method === 'setLayout') {
       if (!this.model.LAYOUTS.includes(arg?.layout)) throw new Error('지원하지 않는 화면 배치입니다.');
       const preferences = { layout: arg.layout, mainSlot: this.model.validSlot(arg?.mainSlot) };
