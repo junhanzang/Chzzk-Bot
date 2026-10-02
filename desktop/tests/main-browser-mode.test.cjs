@@ -109,6 +109,7 @@ async function boot(savedSettings, { packaged = false } = {}) {
     './lib/profile-store.cjs': { ProfileStore: class extends ProfileStore { constructor(directory) { super(directory, { fileSystem: fileApi }); } } },
     './lib/player-manager.cjs': { PlayerManager }, './lib/recording-service.cjs': { RecordingService },
     './lib/auto-clip-service.cjs': { AutoClipService: class extends AutoClipService { constructor(options) { super({ ...options, intervalMs: 0 }); } } },
+    './lib/watch-workspace.cjs': require('../lib/watch-workspace.cjs'),
     './lib/chat-host.cjs': { ChatHost: class { attach() {} detach() {} close() {} } },
     'ffmpeg-static': path.join(profile, 'fake-ffmpeg.exe')
   };
@@ -291,4 +292,69 @@ test('clip length persists, accepts only offered durations and reaches browser a
     await assert.rejects(f.invoke('saveClip', { slotId: 0, seconds }), /저장 길이/);
   }
   assert.equal(f.saves.length, 2);
+});
+
+test('favorite edits and viewing presets preserve active recordings until an assignment changes', async () => {
+  const f = await boot(settings(['desktop', 'desktop']));
+  await f.invoke('setBuffer', { slotId: 0, enabled: true });
+  await f.invoke('renameChannel', { channelId: channelA, name: '새 이름' });
+  await f.browserHandlers.setChannelPinned({ channelId: channelA, pinned: true });
+  await f.invoke('saveWatchPreset', { name: '같이 보는 방송' });
+  const saved = (await f.invoke('getState')).watchPresets[0];
+  await f.invoke('applyWatchPreset', saved.id);
+  assert.equal((await f.invoke('getState')).slots[0].replay.state, 'buffering');
+  assert.equal(f.starts.length, 1); assert.equal(f.views.length, 2);
+  await f.browserHandlers.applyWatchPreset(saved.id);
+  assert.equal((await f.invoke('getState')).slots[0].playbackMode, 'browser');
+  assert.equal((await f.invoke('getState')).slots[0].replay.state, 'idle');
+  assert.equal(f.views.filter(view => !view.webContents.closed).length, 0);
+  const persisted = JSON.parse(f.disk.get(path.join(f.profile, 'settings.json')));
+  assert.equal(persisted.channels[0].name, '새 이름'); assert.equal(persisted.channels[0].pinned, true);
+  await f.invoke('removeChannel', channelA);
+  assert.equal((await f.invoke('getState')).watchPresets[0].slots[0], null);
+});
+
+test('a preset apply blocks deletion of its currently unassigned target channel through both app and bridge', async () => {
+  const f = await boot({ ...settings(['desktop', 'desktop']), slots: [channelA, null, null, null],
+    watchPresets: [{ id: 'next-channel', name: '다음 방송', slots: [channelB, null, null, null], layout: 'focus', mainSlot: 0 }] });
+  const gate = deferred(); f.replay.stop = () => gate.promise;
+  const applying = f.invoke('applyWatchPreset', 'next-channel');
+  await new Promise(setImmediate);
+  assert.equal((await f.invoke('getState')).slots.some(slot => slot.channelId === channelB), false);
+  await assert.rejects(f.invoke('removeChannel', channelB), /방송 조합을 적용/);
+  await assert.rejects(f.browserHandlers.removeChannel(channelB), /방송 조합을 적용/);
+  gate.resolve(); await applying;
+  const state = await f.invoke('getState');
+  assert.equal(state.slots[0].channelId, channelB);
+  assert.equal(state.channels.some(channel => channel.id === channelB), true);
+  assert.equal(JSON.parse(f.disk.get(path.join(f.profile, 'settings.json'))).slots[0], channelB);
+  await f.invoke('removeChannel', channelB);
+  assert.equal((await f.invoke('getState')).channels.some(channel => channel.id === channelB), false);
+});
+
+test('bulk buffer commands keep existing capture, report individual busy failures and leave desktop slots untouched from Chrome', async () => {
+  const f = await boot(settings(['desktop', 'browser']));
+  let result = await f.invoke('setAllBuffers', { enabled: true });
+  assert.equal(result.actionSummary.succeeded, 2); assert.equal(f.starts.length, 2);
+  result = await f.invoke('setAllBuffers', { enabled: true }); assert.equal(f.starts.length, 2);
+  result = await f.browserHandlers.setAllBuffers({ enabled: false, slots: [{ slotId: 1, channelId: channelB }] });
+  assert.equal(result.actionSummary.succeeded, 1);
+  assert.equal(result.slots[0].replay.state, 'buffering'); assert.equal(result.slots[1].replay.state, 'idle');
+  await assert.rejects(f.browserHandlers.setAllBuffers({ enabled: false, slots: [{ slotId: 0, channelId: channelA }] }), /방송을 먼저/);
+  const gate = f.delayPlayback(); const starting = f.invoke('setBuffer', { slotId: 1, enabled: true }); await new Promise(setImmediate);
+  result = await f.invoke('setAllBuffers', { enabled: false });
+  assert.equal(result.actionSummary.succeeded, 1); assert.equal(result.actionSummary.failures[0].slotId, 1);
+  gate.resolve(); await starting;
+});
+
+test('clip metadata mutations are shared through RPC and advance the full-library query revision', async () => {
+  const f = await boot(settings(['desktop', 'browser']));
+  const record = await f.invoke('saveClip', { slotId: 0 });
+  const before = (await f.invoke('getState')).clipRevision;
+  await f.browserHandlers.updateClip({ id: record.id, title: '찾아둘 장면', favorite: true });
+  const result = await f.browserHandlers.queryClips({ query: '찾아둘', filter: 'starred', sort: 'newest', offset: 0, limit: 50 });
+  assert.equal(result.total, 1); assert.equal(result.items[0].fileName, 'fake.mp4'); assert.equal(result.items[0].favorite, true);
+  assert.notEqual(result.revision, before);
+  const persisted = JSON.parse(f.disk.get(path.join(f.profile, 'clips.json')));
+  assert.equal(persisted[0].title, '찾아둘 장면'); assert.equal(persisted[0].favorite, true);
 });

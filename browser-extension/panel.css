@@ -45,3 +45,59 @@
 .auto-clip-message{font-size:9px;line-height:1.7;color:#b6cfbe;overflow-wrap:anywhere}
 .auto-clip-apply{align-self:flex-end;min-height:27px;padding:3px 12px;font-size:10px}
 .auto-clip-badge{display:inline-block;margin-left:6px;padding:0 4px;border:1px solid #41664d;border-radius:4px;color:#abd6bd;font-size:8px;white-space:nowrap}
+
+/* Saved watch combinations and bulk buffer controls. */
+.watch-tools{min-width:0;margin-bottom:12px;padding:9px;border:1px solid #344b3c;border-radius:7px;background:#19261e}
+.watch-tools-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px}
+.watch-tools .button{font-size:9px;min-height:27px;padding:3px 6px}
+.watch-presets-toggle{background:#293f30;border-color:#4a6952;color:#c1ddc9}
+.watch-buffer-actions{display:flex;flex-wrap:wrap;gap:6px}
+.watch-buffer-stop{background:transparent;color:#9db2a6}
+.watch-buffer-hint,.watch-preset-hint,.watch-presets-empty{font-size:9px;line-height:1.7;color:#8ba394;margin:6px 0 0}
+.watch-presets-panel{border-top:1px solid #35483c;margin-top:8px;padding-top:8px}
+.watch-preset-form{display:flex;align-items:flex-end;gap:7px}
+.watch-preset-name-label{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px;color:#afc8b6;font-size:10px}
+.watch-preset-name{height:29px;font-size:10px}
+.watch-presets-list{list-style:none;margin:8px 0 0;padding:0;max-height:250px;overflow:auto;scrollbar-width:thin;scrollbar-color:#415148 transparent}
+.watch-preset-row{display:flex;align-items:center;gap:5px;padding:7px 0;border-bottom:1px solid #2f4135;min-width:0}
+.watch-preset-row:last-child{border-bottom:0}
+.watch-preset-description{flex:1;min-width:0}
+.watch-preset-description strong,.watch-preset-description small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.watch-preset-description strong{font-size:10px;font-weight:500;color:#c9ded0}
+.watch-preset-description small{font-size:8px;color:#819b8b;margin-top:2px}
+.watch-preset-remove{color:#a8b9ad;background:transparent}
+.watch-preset-confirmation{margin-top:9px;padding:8px;border:1px solid #806c47;border-radius:6px;background:#302c21;color:#ddc99f;font-size:10px;line-height:1.7;overflow-wrap:anywhere}
+.watch-preset-confirmation strong{font-weight:600}.watch-preset-confirmation p{margin-top:4px}
+.watch-preset-confirm-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.keyboard-help{flex:1 1 100%;font-size:9px;color:#89a492;max-width:100%;margin-top:5px}
+.keyboard-help summary{cursor:pointer}
+.keyboard-help p{margin:6px 0 0;padding:8px;border:1px solid #344a3a;border-radius:6px;background:#1b2921;line-height:2;color:#9ab5a4}
+.keyboard-help kbd{font:inherit;color:#bbd7c5}
+
+/* Inline favorite editing shares the same channel editor as the app. */
+.channel-editor{display:flex;flex:1 1 calc(100% - 36px);min-width:0;flex-wrap:wrap;gap:4px}
+.channel-identity{flex:1 1 100%;min-width:0}
+.channel-editor .channel-label{display:block;flex-basis:auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.channel-tools{display:flex;flex-wrap:wrap;gap:4px}
+.channel-tools button,.channel-edit-actions button{font:inherit;font-size:9px;min-height:23px;padding:2px 5px;border:1px solid #3d5144;border-radius:4px;background:#233229;color:#a7beaf}
+.channel-tools .channel-pin[aria-pressed="true"]{color:var(--mint);background:#2c4436;border-color:#6b9179}
+.channel-edit-form{flex:1 1 100%;display:flex;flex-wrap:wrap;gap:5px;min-width:0}
+.channel-edit-input{flex:1 1 100%;min-width:0;width:100%;height:28px;font-size:10px;padding:4px 6px}
+.channel-edit-actions{display:flex;gap:4px;justify-content:flex-end;flex:1 1 100%}
+.channel-edit-error{flex:1 1 100%;min-width:0;font-size:9px;line-height:1.6;color:var(--danger);overflow-wrap:anywhere}
+
+/* Filter and edit controls wrap within narrow side panels. */
+.clip-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:7px 0}
+.clip-tools select{min-width:0;max-width:100%;height:28px;padding:3px 6px;border:1px solid #425c4a;border-radius:5px;background:#202f26;color:#bcd4c4;font:inherit;font-size:10px}
+.clip-tools select:focus-visible{outline:2px solid var(--mint);outline-offset:2px}
+.clip-tools select:disabled{opacity:.45}
+.clip-results-status{font-size:9px;line-height:1.7;color:#8aa593;margin:5px 0;overflow-wrap:anywhere}
+.clip-results-status.error{color:var(--danger)}
+.clip-load-more{display:block;min-height:27px;padding:4px 9px;font-size:10px;margin:7px auto 0;border:1px solid #415748;border-radius:5px;background:#25352b;color:#b2cabb}
+.clip-row{flex-wrap:wrap;row-gap:6px}
+.clip-info{min-width:120px}
+.clip-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;margin-left:auto}
+.clip-actions button,.clip-title-editor button{font:inherit;font-size:9px;min-height:25px;padding:3px 6px;border:1px solid #415748;border-radius:5px;background:#25352b;color:#b2cabb}
+.clip-actions .clip-star[aria-pressed="true"]{border-color:#70977b;background:#304c3b;color:var(--mint)}
+.clip-title-editor{display:flex;flex:1 1 100%;min-width:0;gap:5px;flex-wrap:wrap;align-items:center}
+.clip-title-input{flex:1;min-width:120px;height:29px;padding:4px 6px;font-size:10px}

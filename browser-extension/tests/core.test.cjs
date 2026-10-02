@@ -9,7 +9,7 @@ const ID_D = '44444444444444444444444444444444';
 const TOKEN = 'a'.repeat(48);
 const CODE = `43210:${TOKEN}`;
 
-function browserFixture() {
+function browserFixture({ closeEmptyWindows = false } = {}) {
   const local = {}, session = {}, tabs = new Map(), effects = [];
   let nextTabId = 1, nextWindowId = 2, focusedWindowId = 1;
   const windows = new Map([[1, { id: 1, incognito: false, left: 20, top: 30, width: 1400, height: 900 }]]);
@@ -27,6 +27,7 @@ function browserFixture() {
         (!query.url || tab.url.startsWith('https://chzzk.naver.com/live/'))).map(tab => structuredClone(tab)); },
       async sendMessage() { return true; },
       async create(options) {
+        if (closeEmptyWindows && !windows.has(options.windowId || 1)) throw new Error('No window');
         const tab = { id: nextTabId++, windowId: options.windowId || 1, incognito: false, mutedInfo: { muted: false }, status: 'complete', ...options };
         tabs.set(tab.id, tab); effects.push(['create', tab.id, options]); return structuredClone(tab);
       },
@@ -37,10 +38,17 @@ function browserFixture() {
         if (typeof update.muted === 'boolean') tab.mutedInfo = { muted: update.muted };
         effects.push(['update', id, update]); return structuredClone(tab);
       },
-      async remove(id) { tabs.delete(id); effects.push(['remove', id]); }
+      async remove(id) {
+        const tab = tabs.get(id);
+        tabs.delete(id); effects.push(['remove', id]);
+        if (closeEmptyWindows && tab && ![...tabs.values()].some(other => other.windowId === tab.windowId)) {
+          windows.delete(tab.windowId);
+          if (focusedWindowId === tab.windowId) focusedWindowId = windows.keys().next().value;
+        }
+      }
     },
     windows: {
-      async getLastFocused() { return structuredClone(windows.get(focusedWindowId)); },
+      async getLastFocused() { if (closeEmptyWindows && !windows.has(focusedWindowId)) throw new Error('No window'); return structuredClone(windows.get(focusedWindowId)); },
       async update(id, update) {
         if (!windows.has(id)) throw new Error('No window');
         Object.assign(windows.get(id), update);
@@ -51,7 +59,14 @@ function browserFixture() {
       async create(options) {
         const result = { ...options, id: nextWindowId++, incognito: false };
         windows.set(result.id, result);
-        if (options.tabId) tabs.get(options.tabId).windowId = result.id;
+        if (options.tabId) {
+          const tab = tabs.get(options.tabId), previousWindow = tab.windowId;
+          tab.windowId = result.id;
+          if (closeEmptyWindows && ![...tabs.values()].some(other => other.windowId === previousWindow)) {
+            windows.delete(previousWindow);
+            if (focusedWindowId === previousWindow) focusedWindowId = result.id;
+          }
+        }
         if (options.focused) focusedWindowId = result.id;
         effects.push(['window-create', options]); return structuredClone(result);
       }
@@ -81,6 +96,24 @@ function remoteFixture() {
     if (method === 'setLayout') Object.assign(state, { layout: arg.layout, mainSlot: arg.mainSlot });
     if (method === 'setClipSeconds') state.clipSeconds = arg;
     if (method === 'setAutoClipSettings') state.autoClipSettings[arg.channelId] = model.normalizeAutoClipConfig(arg);
+    if (method === 'renameChannel' || method === 'setChannelPinned') state.channels = model.updateChannel(state.channels, method, arg);
+    if (method === 'saveWatchPreset') {
+      state.watchPresets ||= [];
+      state.watchPresets.push(model.createWatchPreset({ ...state, slots: state.slots.map(slot => slot.channelId), id: `preset-${state.watchPresets.length}`, name: arg.name }, state.channels, state.watchPresets));
+    }
+    if (method === 'removeWatchPreset') state.watchPresets = state.watchPresets.filter(preset => preset.id !== arg);
+    if (method === 'applyWatchPreset') {
+      const preset = state.watchPresets.find(preset => preset.id === arg);
+      state.slots.forEach(slot => { slot.channelId = preset.slots[slot.slotId]; slot.playbackMode = 'browser'; });
+      state.layout = preset.layout; state.mainSlot = preset.mainSlot;
+    }
+    if (method === 'queryClips') return { ok: true, status: 200, json: async () => ({ ok: true, value: {
+      items: state.clips, total: state.clips.length, offset: 0, limit: 50, revision: 'test:1' } }) };
+    if (method === 'updateClip') Object.assign(state.clips.find(clip => clip.id === arg.id), arg);
+    if (method === 'setAllBuffers') {
+      for (const target of arg.slots) state.slots[target.slotId].replay = { state: arg.enabled ? 'buffering' : 'idle', bufferedSeconds: arg.enabled ? 30 : 0 };
+      return { ok: true, status: 200, json: async () => ({ ok: true, value: { ...structuredClone(state), actionSummary: { succeeded: arg.slots.length, failures: [] } } }) };
+    }
     if (method === 'clearSlot') state.slots[arg].channelId = null;
     if (method === 'removeChannel') {
       state.channels = state.channels.filter(channel => channel.id !== arg);
@@ -92,9 +125,9 @@ function remoteFixture() {
   return { state, calls, fetchImpl, setUnavailable(value) { unavailable = value; } };
 }
 
-async function setup() {
+async function setup(options) {
   const { DeskController } = await import('../lib/core.js');
-  const browser = browserFixture(), remote = remoteFixture();
+  const browser = browserFixture(options), remote = remoteFixture();
   const controller = new DeskController({ ...browser, model, fetchImpl: remote.fetchImpl });
   return { ...browser, remote, controller, DeskController };
 }
@@ -550,7 +583,7 @@ test('clip length defaults to 30 and standalone choices persist without opening 
   for (const seconds of [15, 60, 30]) {
     const state = await f.controller.handle('setClipSeconds', seconds);
     assert.equal(state.clipSeconds, seconds);
-    assert.deepEqual(f.local['desk.preferences'], { layout: 'focus', mainSlot: 2, autoRewards: true, clipSeconds: seconds });
+    assert.deepEqual(f.local['desk.preferences'], { layout: 'focus', mainSlot: 2, autoRewards: true, clipSeconds: seconds, watchPresets: [] });
     const revived = new f.DeskController({ chromeApi: f.chromeApi, model, fetchImpl: f.remote.fetchImpl });
     assert.equal((await revived.handle('getState')).clipSeconds, seconds);
   }
@@ -874,4 +907,154 @@ test('desktop rejection of a stale chat generation is not reported as accepted t
     ? { ok: true, status: 200, json: async () => ({ ok: true, value: { accepted: false } }) }
     : originalFetch(url, options);
   await assert.rejects(f.controller.handleChatMessage({ method: 'submitBatch', arg: { ...context, sourceStatus: 'watching', events: [] } }, f.sender), /전달하지/);
+});
+
+test('standalone channel edits and watch presets survive preference changes and a new controller', async () => {
+  const f = await setup();
+  await f.controller.handle('addChannel', { input: ID_A, name: 'A' });
+  await f.controller.handle('addChannel', { input: ID_B, name: 'B' });
+  await f.controller.handle('renameChannel', { channelId: ID_A, name: '새 이름' });
+  await f.controller.handle('setChannelPinned', { channelId: ID_A, pinned: true });
+  await f.controller.handle('saveWatchPreset', { name: '저녁 조합' });
+  const id = f.controller.snapshot().watchPresets[0].id;
+  await f.controller.handle('setAutoRewards', true);
+  await f.controller.handle('clearSlot', 0);
+  await f.controller.handle('clearSlot', 1);
+  await f.controller.handle('applyWatchPreset', id);
+  let state = f.controller.snapshot();
+  assert.deepEqual(state.slots.map(slot => slot.channelId), [ID_A, ID_B, null, null]);
+  assert.equal(state.audioSlot, null); assert.ok(state.slots.filter(slot => slot.tabId).every(slot => f.tabs.get(slot.tabId).mutedInfo.muted));
+  const restored = new f.DeskController({ chromeApi: f.chromeApi, fetchImpl: f.remote.fetchImpl });
+  await restored.initialize(); state = restored.snapshot();
+  assert.equal(state.channels[0].name, '새 이름'); assert.equal(state.channels[0].pinned, true);
+  assert.equal(state.watchPresets[0].id, id); assert.equal(state.rewardSettings.enabled, true);
+  await restored.handle('removeChannel', ID_A);
+  assert.equal(restored.snapshot().watchPresets[0].slots[0], null);
+});
+
+test('paired preset apply shares app settings and opens only owned Chrome channels', async () => {
+  const f = await setup(); await f.controller.handle('pair', CODE);
+  await f.controller.handle('addChannel', { input: ID_A, name: 'A' });
+  await f.controller.handle('addChannel', { input: ID_B, name: 'B' });
+  await f.controller.handle('saveWatchPreset', { name: '함께 보기' });
+  const id = f.controller.snapshot().watchPresets[0].id;
+  const unrelated = await f.chromeApi.tabs.create({ url: 'https://example.com', active: false });
+  await f.controller.handle('clearSlot', 0); await f.controller.handle('clearSlot', 1);
+  await f.controller.handle('applyWatchPreset', id);
+  const state = f.controller.snapshot();
+  assert.deepEqual(state.slots.map(slot => slot.channelId), [ID_A, ID_B, null, null]);
+  assert.ok(f.tabs.has(unrelated.id)); assert.equal(f.tabs.get(unrelated.id).url, 'https://example.com');
+  assert.ok(f.remote.calls.some(([method]) => method === 'applyWatchPreset'));
+  f.remote.state.slots[0].playbackMode = 'desktop';
+  const appMode = await f.controller.handle('getState');
+  assert.equal(appMode.slots[0].playbackMode, 'desktop');
+  const { presetChanges } = await import('../shared/ui/watch-tools.mjs');
+  assert.deepEqual(presetChanges(appMode, appMode.watchPresets[0], 'browser'), [0], 'Same-channel app capture must be included in the confirmation');
+});
+
+for (const paired of [false, true]) {
+  test(`${paired ? 'paired' : 'standalone'} preset replacement reuses the last owned tab without closing Chrome`, async () => {
+    const f = await setup({ closeEmptyWindows: true });
+    if (paired) await f.controller.handle('pair', CODE);
+    await f.controller.handle('addChannel', { input: ID_B, name: 'B' });
+    await f.controller.handle('saveWatchPreset', { name: 'B 한 자리' });
+    const presetId = f.controller.snapshot().watchPresets[0].id;
+    await f.controller.handle('addChannel', { input: ID_A, name: 'A' });
+    await f.controller.handle('clearSlot', 0);
+    const existingId = f.controller.snapshot().slots[1].tabId;
+    assert.equal(f.tabs.size, 1);
+    f.effects.length = 0;
+    const state = await f.controller.handle('applyWatchPreset', presetId);
+    assert.equal(state.slots[0].tabId, existingId);
+    assert.deepEqual(state.slots.map(slot => slot.channelId), [ID_B, null, null, null]);
+    assert.equal(f.windows.size, 1);
+    assert.equal(f.tabs.get(existingId).url, `https://chzzk.naver.com/live/${ID_B}`);
+    assert.equal(f.controller.tabs.slot(0).createdByDesk, true);
+    assert.equal(f.effects.some(([action]) => action === 'remove' || action === 'create'), false);
+    await f.controller.handle('clearSlot', 0);
+    assert.equal(f.tabs.size, 0, 'The reused tab must remain owned, not become adopted');
+  });
+}
+
+test('preset swaps and moves retain owned/adopted records and mute moved audio', async () => {
+  const f = await setup({ closeEmptyWindows: true });
+  const adopted = await f.chromeApi.tabs.create({ url: `https://chzzk.naver.com/live/${ID_A}` });
+  await f.controller.handle('addChannel', { input: ID_A, name: 'A' });
+  await f.controller.handle('addChannel', { input: ID_B, name: 'B' });
+  const ownedId = f.controller.snapshot().slots[1].tabId;
+  await f.controller.storage.savePresets([{ id: 'swap', name: '자리 바꾸기', slots: [ID_B, null, null, ID_A], layout: 'grid', mainSlot: 3 }]);
+  await f.controller.handle('selectAudio', 0);
+  f.effects.length = 0;
+  const state = await f.controller.handle('applyWatchPreset', 'swap');
+  assert.equal(state.slots[0].tabId, ownedId);
+  assert.equal(state.slots[3].tabId, adopted.id);
+  assert.equal(state.audioSlot, null);
+  assert.equal(f.tabs.get(adopted.id).mutedInfo.muted, true);
+  assert.equal(f.controller.tabs.slot(0).createdByDesk, true);
+  assert.equal(f.controller.tabs.slot(3).createdByDesk, false);
+  assert.equal(f.controller.tabs.slot(3).previousMuted, false);
+  assert.equal(f.effects.some(([action]) => action === 'remove' || action === 'create'), false);
+  await f.controller.handle('clearSlot', 3);
+  assert.equal(f.tabs.has(adopted.id), true);
+  assert.equal(f.tabs.get(adopted.id).mutedInfo.muted, false);
+  await f.controller.handle('clearSlot', 0);
+  assert.equal(f.tabs.has(ownedId), false);
+});
+
+test('a preset releases unrelated adopted tabs without closing them or losing retained ownership', async () => {
+  const f = await setup({ closeEmptyWindows: true });
+  const adopted = await f.chromeApi.tabs.create({ url: `https://chzzk.naver.com/live/${ID_A}` });
+  await f.controller.handle('addChannel', { input: ID_A });
+  await f.controller.handle('addChannel', { input: ID_B });
+  const ownedId = f.controller.snapshot().slots[1].tabId;
+  await f.controller.storage.savePresets([{ id: 'single', name: 'B만 보기', slots: [ID_B, null, null, null], layout: 'side-by-side', mainSlot: 0 }]);
+  await f.controller.handle('applyWatchPreset', 'single');
+  assert.equal(f.controller.snapshot().slots[0].tabId, ownedId);
+  assert.equal(f.controller.tabs.slot(0).createdByDesk, true);
+  assert.equal(f.controller.tabs.contains(adopted.id), false);
+  assert.equal(f.tabs.get(adopted.id).url, `https://chzzk.naver.com/live/${ID_A}`);
+  assert.equal(f.tabs.get(adopted.id).mutedInfo.muted, false);
+  assert.equal(f.tabs.size, 2);
+});
+
+test('failed preset replacements leave old tabs available instead of closing empty target slots first', async () => {
+  const f = await setup({ closeEmptyWindows: true });
+  for (const id of [ID_A, ID_B, ID_C]) await f.controller.handle('addChannel', { input: id });
+  await f.controller.handle('clearSlot', 1);
+  const existing = [...f.tabs.keys()];
+  await f.controller.storage.savePresets([{ id: 'unavailable', name: '열리지 않는 방송', slots: [null, null, null, ID_B], layout: 'grid', mainSlot: 3 }]);
+  const update = f.chromeApi.tabs.update;
+  f.chromeApi.tabs.update = async (id, options) => {
+    if (options.url === `https://chzzk.naver.com/live/${ID_B}`) throw new Error('Navigation failed');
+    return update(id, options);
+  };
+  f.effects.length = 0;
+  await assert.rejects(f.controller.handle('applyWatchPreset', 'unavailable'), /D 방송 탭/);
+  assert.equal(f.windows.size, 1);
+  assert.deepEqual([...f.tabs.keys()], existing);
+  assert.equal(f.effects.some(([action]) => action === 'remove'), false);
+  assert.equal(f.controller.tabs.records().filter(record => record?.createdByDesk).length, 2);
+});
+
+test('bulk Chrome capture reports missing tabs and never targets embedded desktop playback', async () => {
+  const f = await setup(); await f.controller.handle('pair', CODE);
+  for (const id of [ID_A, ID_B, ID_C]) await f.controller.handle('addChannel', { input: id, name: id });
+  f.remote.state.slots[0].playbackMode = 'desktop';
+  const missing = f.controller.snapshot().slots[2].tabId; await f.chromeApi.tabs.remove(missing);
+  let state = await f.controller.handle('setAllBuffers', { enabled: true });
+  assert.equal(state.actionSummary.succeeded, 1); assert.equal(state.actionSummary.failures[0].slotId, 2);
+  assert.deepEqual(f.remote.calls.find(([method]) => method === 'setAllBuffers')[1].slots, [{ slotId: 1, channelId: ID_B }]);
+  state = await f.controller.handle('setAllBuffers', { enabled: false });
+  assert.equal(state.actionSummary.succeeded, 2, 'stopping capture does not require the Chrome tab to remain open');
+  assert.equal(f.remote.state.slots[0].replay.state, 'idle');
+});
+
+test('full clip queries preserve favorites and strip private paths without replacing panel state', async () => {
+  const f = await setup(); await f.controller.handle('pair', CODE);
+  f.remote.state.clips = [{ id: 'clip', fileName: 'clip.mp4', title: '장면', favorite: true, path: 'C:/private/file', secret: TOKEN, duration: 30 }];
+  const page = await f.controller.handle('queryClips', { filter: 'starred', offset: 0, limit: 50 });
+  assert.equal(page.items[0].favorite, true); assert.equal(page.total, 1); assert.equal(page.items[0].path, undefined);
+  assert.ok(!JSON.stringify(page).includes(TOKEN));
+  const state = await f.controller.handle('updateClip', { id: 'clip', title: '수정한 이름' });
+  assert.equal(state.connection.status, 'connected'); assert.equal(state.clips[0].title, '수정한 이름');
 });

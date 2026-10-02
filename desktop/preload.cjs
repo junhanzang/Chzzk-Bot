@@ -2,7 +2,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const methods = ['getState', 'addChannel', 'removeChannel', 'assignSlot', 'clearSlot', 'selectAudio',
   'setBuffer', 'saveClip', 'reloadSlot', 'login', 'refreshAuth', 'openExternal', 'openClip', 'showClipsFolder', 'setPlayerBounds',
-  'copyBrowserConnectionCode', 'resetBrowserConnection', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings'];
+  'copyBrowserConnectionCode', 'resetBrowserConnection', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings',
+  'renameChannel', 'setChannelPinned', 'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers',
+  'queryClips', 'updateClip', 'showClipInFolder'];
 const bridge = {};
 for (const method of methods) {
   bridge[method] = async arg => {

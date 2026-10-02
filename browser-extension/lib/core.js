@@ -1,17 +1,19 @@
 import '../shared/channels.js';
-import { DesktopConnection, idleReplay, blankRemote } from './desktop-connection.js';
+import { DesktopConnection, idleReplay, blankRemote, sanitizeClipPage } from './desktop-connection.js';
 import { DeskStorage } from './desk-storage.js';
 import { ManagedTabs } from './managed-tabs.js';
 import { RewardService } from './reward-service.js';
 import { ChatService } from './chat-service.js';
 import { WindowLayout } from './window-layout.js';
+import { WatchWorkspace } from './watch-workspace.js';
 
 export { parsePairCode } from './desktop-connection.js';
 export { layoutBounds } from './window-layout.js';
 
-const CLIP_METHODS = new Set(['setBuffer', 'saveClip', 'openClip', 'showClipsFolder']);
+const CLIP_METHODS = new Set(['setBuffer', 'saveClip', 'openClip', 'showClipsFolder', 'showClipInFolder', 'updateClip']);
 const ALL_METHODS = new Set(['getState', 'pair', 'disconnect', 'addChannel', 'removeChannel', 'assignSlot', 'clearSlot',
-  'selectAudio', 'focusSlot', 'arrangeWindows', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings', ...CLIP_METHODS]);
+  'selectAudio', 'focusSlot', 'arrangeWindows', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings',
+  'renameChannel', 'setChannelPinned', 'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers', 'queryClips', ...CLIP_METHODS]);
 
 export function panelSenderAllowed(sender, chromeApi) {
   return sender?.id === chromeApi.runtime.id && sender.url === chromeApi.runtime.getURL('panel.html') && !sender.tab?.incognito;
@@ -39,6 +41,8 @@ export class DeskController {
       submit: batch => this.desktop.request('submitChatBatch', batch) });
     this.chatRefreshAt = 0;
     this.windows = new WindowLayout(chromeApi);
+    this.watch = new WatchWorkspace({ model, storage: this.storage, desktop: this.desktop, tabs: this.tabs,
+      linkedMutation: (method, arg) => this.linkedMutation(method, arg) });
     this.lastNotice = null;
     this.queue = Promise.resolve();
     this.initializing = null;
@@ -144,8 +148,11 @@ export class DeskController {
     const preferences = this.storage.preferences, channels = linked ? base.channels : this.storage.channels;
     const view = this.tabs.snapshot(channels, linked ? base.slots.map(slot => slot.channelId) : this.tabs.assignments());
     return {
-      channels, slots: view.slots.map(slot => ({ ...slot, replay: linked ? base.slots[slot.slotId].replay : idleReplay() })),
+      channels, slots: view.slots.map(slot => ({ ...slot,
+        playbackMode: linked ? base.slots[slot.slotId].playbackMode : 'browser',
+        replay: linked ? base.slots[slot.slotId].replay : idleReplay() })),
       audioSlot: view.audioSlot, clips: base.clips, savingSlots: base.savingSlots,
+      watchPresets: this.watch.presets, clipRevision: base.clipRevision, clipTotal: base.clipTotal, actionSummary: null,
       ffmpegAvailable: linked && this.desktop.status.status === 'connected' && base.ffmpegAvailable,
       layout: linked ? base.layout : preferences.layout, mainSlot: linked ? base.mainSlot : preferences.mainSlot,
       clipSeconds: linked ? base.clipSeconds : preferences.clipSeconds,
@@ -157,6 +164,11 @@ export class DeskController {
   }
 
   async perform(method, arg) {
+    if (method === 'queryClips') {
+      if (!this.desktop.paired) throw new Error('클립 보관함은 데스크톱 앱을 연결하면 사용할 수 있어요.');
+      return sanitizeClipPage(await this.desktop.request(method, arg), this.model);
+    }
+    if (method === 'setAllBuffers') return this.setAllBuffers(arg);
     if (method === 'getState') {
       if (this.desktop.paired) await this.refreshRemote().catch(() => {});
       await this.tabs.inspect();
@@ -192,6 +204,19 @@ export class DeskController {
         const slotId = this.tabs.firstEmpty();
         if (slotId !== -1) await this.openAssignedChannel(slotId, channelId);
       }
+    } else if (method === 'renameChannel' || method === 'setChannelPinned') {
+      // Shared validation is also used by the desktop command.
+      this.model.updateChannel(this.channels(), method, arg);
+      if (this.desktop.paired) await this.linkedMutation(method, arg);
+      else await this.storage.changeChannel(method, arg);
+    } else if (method === 'saveWatchPreset') {
+      await this.watch.save(arg);
+    } else if (method === 'removeWatchPreset') {
+      await this.watch.remove(arg);
+    } else if (method === 'applyWatchPreset') {
+      await this.watch.apply(arg);
+      const preferences = this.desktop.paired ? this.desktop.remote : this.storage.preferences;
+      await this.windows.arrange(await this.tabs.targets(), preferences, () => this.storage.updateSession(this.windows.serialize()));
     } else if (method === 'removeChannel') {
       const id = this.model.parseChannel(arg), affected = this.tabs.slotsForChannel(id);
       if (this.desktop.paired) await this.linkedMutation('removeChannel', id);
@@ -271,7 +296,29 @@ export class DeskController {
       if (method === 'saveClip' && remote.replay.bufferedSeconds < 4) throw new Error('완료된 영상 구간이 4초 이상 모인 뒤 저장해 주세요.');
       arg = { ...arg, channelId: managed.channelId };
     }
-    return this.linkedMutation(method, arg);
+    const result = await this.linkedMutation(method, arg);
+    return method === 'updateClip' ? this.snapshot() : result;
+  }
+
+  async setAllBuffers(arg) {
+    if (!this.desktop.paired) throw new Error('구간 보관은 데스크톱 앱을 연결하면 사용할 수 있어요.');
+    if (typeof arg?.enabled !== 'boolean') throw new Error('보관 설정이 올바르지 않습니다.');
+    await this.refreshRemote({ reconcile: false });
+    const targets = this.desktop.remote.slots.filter(slot => slot.channelId && slot.playbackMode === 'browser');
+    if (!targets.length) throw new Error('Chrome에서 보관할 방송을 먼저 열어 주세요.');
+    const slots = [], failures = [];
+    for (const { slotId, channelId } of targets) {
+      if (arg.enabled && (!await this.tabs.getTab(slotId) || this.tabs.channelId(slotId) !== channelId)) {
+        failures.push({ slotId, message: 'Chrome 방송 탭을 먼저 열어 주세요.' });
+      } else slots.push({ slotId, channelId });
+    }
+    let summary = { succeeded: 0, failures: [] };
+    if (slots.length) {
+      const response = await this.linkedMutation('setAllBuffers', { enabled: arg.enabled, slots });
+      if (response?.actionSummary) summary = response.actionSummary;
+    }
+    return { ...this.snapshot(), actionSummary: { succeeded: summary.succeeded,
+      failures: [...failures, ...summary.failures].sort((a, b) => a.slotId - b.slotId) } };
   }
 
   onTabChanged(tabId) { return this.enqueue(async () => { if (this.tabs.contains(tabId)) await this.tabs.inspect(); }); }

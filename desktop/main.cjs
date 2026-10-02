@@ -92,7 +92,7 @@ app.whenReady().then(async () => {
   authSession.on('signed-in', () => players.reloadAll());
   controller = new DeskController({ profile, store, players, recordings, auth: authSession, version: app.getVersion(),
     browserAvailable: () => Boolean(browserBridge?.connectionCode),
-    openExternal: url => shell.openExternal(url), openPath: target => shell.openPath(target) });
+    openExternal: url => shell.openExternal(url), openPath: target => shell.openPath(target), revealPath: target => shell.showItemInFolder(target) });
   controller.on('change', publish);
   controller.on('notice', notify);
   const actions = {

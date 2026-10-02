@@ -5,11 +5,13 @@ export class DeskStorage {
   #channels = [];
   #preferences = { layout: 'side-by-side', mainSlot: 0, clipSeconds: 30, autoRewards: false };
   #session = {};
+  #presets = [];
   #sessionWrite = Promise.resolve();
 
   constructor({ chromeApi, model }) { this.storage = chromeApi.storage; this.model = model; }
   get channels() { return this.#channels.map(channel => ({ ...channel })); }
   get preferences() { return { ...this.#preferences }; }
+  get watchPresets() { return structuredClone(this.#presets); }
 
   async load() {
     const [local, session] = await Promise.all([
@@ -18,6 +20,7 @@ export class DeskStorage {
     this.#channels = this.model.normalizeSettings({ channels: local[KEYS.favorites] }).channels;
     const raw = local[KEYS.preferences] || {};
     this.#preferences = { ...this.model.normalizeLayout(raw), clipSeconds: this.model.normalizeClipSeconds(raw.clipSeconds), autoRewards: raw.autoRewards === true };
+    this.#presets = this.model.normalizeWatchPresets(raw.watchPresets, this.#channels);
     this.#session = session[KEYS.session] || {};
     return { pairing: local[KEYS.pairing], session: structuredClone(this.#session) };
   }
@@ -28,7 +31,16 @@ export class DeskStorage {
     await this.saveChannels([...this.#channels, channel]);
   }
 
-  async removeChannel(id) { await this.saveChannels(this.#channels.filter(channel => channel.id !== id)); }
+  async removeChannel(id) {
+    await this.saveChannels(this.#channels.filter(channel => channel.id !== id));
+    await this.savePresets(this.model.normalizeWatchPresets(this.#presets, this.#channels));
+  }
+
+  async changeChannel(method, arg) { await this.saveChannels(this.model.updateChannel(this.#channels, method, arg)); }
+  async savePresets(presets) {
+    await this.storage.local.set({ [KEYS.preferences]: { ...this.#preferences, watchPresets: presets } });
+    this.#presets = structuredClone(presets);
+  }
 
   async mergeChannels(channels) {
     const byId = new Map(this.#channels.map(channel => [channel.id, channel]));
@@ -43,7 +55,7 @@ export class DeskStorage {
 
   async updatePreferences(patch) {
     const next = { ...this.#preferences, ...patch };
-    await this.storage.local.set({ [KEYS.preferences]: next });
+    await this.storage.local.set({ [KEYS.preferences]: { ...next, watchPresets: this.#presets } });
     this.#preferences = next;
   }
 

@@ -1,9 +1,11 @@
 'use strict';
 
 const { EventEmitter } = require('node:events');
-const { parseChannel, cleanTitle, normalizeSettings, normalizeAutoClipConfig, validSlot, SLOT_IDS, LAYOUTS, validClipSeconds } = require('./channels.cjs');
+const { randomUUID } = require('node:crypto');
+const { parseChannel, cleanTitle, normalizeSettings, normalizeAutoClipConfig, updateChannel, validSlot, SLOT_IDS, LAYOUTS, validClipSeconds } = require('./channels.cjs');
 const { ClipLibrary, loadClipLibrary } = require('./clip-library.cjs');
 const { AutoClipService } = require('./auto-clip-service.cjs');
+const { WatchWorkspace } = require('./watch-workspace.cjs');
 
 async function loadDeskProfile({ store, dataDir, preferredClipsDir }) {
   const stored = await store.load();
@@ -18,10 +20,11 @@ async function loadDeskProfile({ store, dataDir, preferredClipsDir }) {
 
 const COMMANDS = Object.freeze(['getState', 'refreshAuth', 'login', 'setClipSeconds', 'setAutoRewards', 'setAutoClipSettings', 'submitChatBatch', 'setLayout',
   'addChannel', 'removeChannel', 'assignSlot', 'clearSlot', 'selectAudio', 'setBuffer', 'saveClip', 'reloadSlot',
-  'openExternal', 'openClip', 'showClipsFolder', 'setPlayerBounds']);
+  'openExternal', 'openClip', 'showClipsFolder', 'setPlayerBounds', 'renameChannel', 'setChannelPinned',
+  'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers', 'queryClips', 'updateClip', 'showClipInFolder']);
 
 class DeskController extends EventEmitter {
-  constructor({ profile, store, players, recordings, auth, version, browserAvailable, openExternal, openPath }) {
+  constructor({ profile, store, players, recordings, auth, version, browserAvailable, openExternal, openPath, revealPath }) {
     super();
     this.settings = profile.settings;
     this.clips = profile.clips;
@@ -36,15 +39,20 @@ class DeskController extends EventEmitter {
     this.openExternalUrl = openExternal;
     this.openPath = openPath;
     this.busy = new Set();
+    this.quitting = false; this.workspaceBusy = false;
+    this.clipSession = randomUUID(); this.clipCounter = 0;
     this.removingChannels = new Set();
     this.settings.autoClipSettings ||= {};
     this.library = new ClipLibrary({ clips: this.clips, clipsDir: this.clipsDir, legacyFiles: this.legacyFiles,
-      openPath, persist: () => this.persist() });
+      openPath, revealPath, persist: () => this.persist() });
+    this.workspace = new WatchWorkspace({ settings: this.settings, persist: () => this.persist(),
+      exclusive: action => this.allSlotsAction(action), closeSlot: slotId => this.closeSlot(slotId),
+      openSlot: (slotId, channelId, playbackMode) => this.openSlot(slotId, channelId, playbackMode), isQuitting: () => this.quitting });
     this.autoClips = new AutoClipService({ recordings,
       assignment: slotId => ({ channelId: this.settings.slots[slotId] }),
       config: channelId => this.settings.autoClipSettings[channelId], isBusy: slotId => this.busy.has(slotId),
       save: (slotId, range, trigger) => this.slotAction(slotId, () => this.recordings.saveRange(slotId, range, trigger,
-        async record => { await this.library.register(record); this.publish(); })) });
+        record => this.registerClip(record))) });
     this.autoClips.on('change', () => this.publish());
     for (const service of [players, recordings, auth]) service.on('change', () => this.emit('change'));
     for (const service of [players, auth]) service.on('notice', (...args) => this.emit('notice', ...args));
@@ -61,11 +69,18 @@ class DeskController extends EventEmitter {
   commands() { return Object.fromEntries(COMMANDS.map(name => [name, arg => this[name](arg)])); }
   persist() { return this.store.save({ settings: this.settings, clips: this.clips }); }
   publish() { this.emit('change'); }
+  get clipRevision() { return `${this.clipSession}:${this.clipCounter}`; }
+  async registerClip(record) {
+    try { await this.library.register(record); }
+    finally { this.clipCounter++; this.publish(); }
+  }
 
   getState() {
     const settings = this.settings;
+    const clips = this.library.committedClips;
     return {
-      version: this.version, channels: settings.channels, audioSlot: this.players.audioSlot, clips: this.clips.slice(0, 100),
+      version: this.version, channels: settings.channels, audioSlot: this.players.audioSlot, clips: clips.slice(0, 100),
+      clipRevision: this.clipRevision, clipTotal: clips.length, watchPresets: settings.watchPresets, actionSummary: null,
       layout: settings.layout, mainSlot: settings.mainSlot, clipSeconds: settings.clipSeconds,
       autoClipSettings: settings.autoClipSettings, autoClips: this.autoClips.snapshot(),
       rewardSettings: { enabled: settings.rewardSettings.enabled },
@@ -87,9 +102,26 @@ class DeskController extends EventEmitter {
 
   async slotAction(slotId, operation) {
     validSlot(slotId);
+    if (this.quitting) throw new Error('앱을 종료하고 있습니다.');
     if (this.busy.has(slotId)) throw new Error('이 방송의 작업이 진행 중입니다. 잠시 후 다시 시도해 주세요.');
     this.busy.add(slotId);
     try { return await operation(); } finally { this.busy.delete(slotId); this.publish(); }
+  }
+
+  async allSlotsAction(operation) {
+    if (this.quitting) throw new Error('앱을 종료하고 있습니다.');
+    if (this.busy.size || this.workspaceBusy) throw new Error('진행 중인 방송 작업이 끝난 뒤 다시 시도해 주세요.');
+    this.workspaceBusy = true; SLOT_IDS.forEach(slotId => this.busy.add(slotId));
+    try { return await operation(); }
+    finally { this.workspaceBusy = false; SLOT_IDS.forEach(slotId => this.busy.delete(slotId)); this.publish(); }
+  }
+
+  openSlot(slotId, channelId, playbackMode) {
+    if (this.quitting) throw new Error('앱을 종료하고 있습니다.');
+    this.settings.slots[slotId] = channelId;
+    this.settings.playbackModes ||= SLOT_IDS.map(() => 'desktop');
+    this.settings.playbackModes[slotId] = playbackMode;
+    if (playbackMode === 'desktop') this.players.open(slotId, channelId);
   }
 
   async closeSlot(slotId) {
@@ -143,9 +175,27 @@ class DeskController extends EventEmitter {
   }
 
   async setLayout({ layout, mainSlot = this.settings.mainSlot } = {}) {
+    if (this.workspaceBusy) throw new Error('방송 조합을 적용하고 있어요. 잠시 후 다시 시도해 주세요.');
     if (!LAYOUTS.includes(layout)) throw new Error('올바른 화면 배치를 선택해 주세요.');
     validSlot(mainSlot); this.settings.layout = layout; this.settings.mainSlot = mainSlot;
     await this.persist(); this.publish(); return this.getState();
+  }
+
+  async changeChannel(method, arg) {
+    this.settings.channels = updateChannel(this.settings.channels, method, arg);
+    await this.persist(); this.publish(); return this.getState();
+  }
+  renameChannel(arg) { return this.changeChannel('renameChannel', arg); }
+  setChannelPinned(arg) { return this.changeChannel('setChannelPinned', arg); }
+  async saveWatchPreset(arg) {
+    if (this.busy.size) throw new Error('진행 중인 방송 작업이 끝난 뒤 조합을 저장해 주세요.');
+    await this.workspace.save(arg); this.publish(); return this.getState();
+  }
+  async removeWatchPreset(id) { await this.workspace.remove(id); this.publish(); return this.getState(); }
+  async applyWatchPreset(arg) {
+    const id = typeof arg === 'string' ? arg : arg?.id;
+    await this.workspace.apply(id, typeof arg === 'string' ? 'desktop' : arg?.playbackMode || 'desktop');
+    this.publish(); return this.getState();
   }
 
   async addChannel({ input, name, playbackMode = 'desktop' } = {}) {
@@ -161,6 +211,7 @@ class DeskController extends EventEmitter {
   }
 
   async removeChannel(id) {
+    if (this.workspaceBusy) throw new Error('방송 조합을 적용하고 있어요. 적용이 끝난 뒤 삭제해 주세요.');
     if (this.removingChannels.has(id)) throw new Error('이미 이 채널을 삭제 중입니다.');
     const slots = SLOT_IDS.filter(slotId => this.settings.slots[slotId] === id);
     if (slots.some(slotId => this.busy.has(slotId))) throw new Error('이 채널의 저장·준비 작업이 끝난 뒤 삭제해 주세요.');
@@ -169,6 +220,7 @@ class DeskController extends EventEmitter {
       for (const slotId of slots) await this.closeSlot(slotId);
       this.settings.channels = this.settings.channels.filter(c => c.id !== id);
       delete this.settings.autoClipSettings[id];
+      this.workspace.prune();
       await this.persist(); return this.getState();
     } finally {
       slots.forEach(slotId => this.busy.delete(slotId)); this.removingChannels.delete(id); this.publish();
@@ -183,10 +235,7 @@ class DeskController extends EventEmitter {
       if (this.settings.slots[slotId] === channelId && (this.settings.playbackModes?.[slotId] || 'desktop') === playbackMode &&
           (playbackMode === 'browser' || this.players.has(slotId))) return this.getState();
       await this.closeSlot(slotId);
-      this.settings.slots[slotId] = channelId;
-      this.settings.playbackModes ||= SLOT_IDS.map(() => 'desktop');
-      this.settings.playbackModes[slotId] = playbackMode;
-      if (playbackMode === 'desktop') this.players.open(slotId, channelId);
+      this.openSlot(slotId, channelId, playbackMode);
       await this.persist(); return this.getState();
     });
   }
@@ -202,10 +251,27 @@ class DeskController extends EventEmitter {
     });
   }
 
-  saveClip({ slotId, seconds = this.settings.clipSeconds } = {}) {
-    return this.slotAction(slotId, () => this.recordings.save(slotId, seconds, async record => {
-      await this.library.register(record); this.publish();
+  async setAllBuffers({ enabled, slots } = {}) {
+    if (typeof enabled !== 'boolean') throw new Error('보관 설정이 올바르지 않습니다.');
+    const targets = slots ?? SLOT_IDS.filter(slotId => this.settings.slots[slotId]).map(slotId => ({ slotId, channelId: this.settings.slots[slotId] }));
+    if (!Array.isArray(targets) || targets.length > 4 || new Set(targets.map(slot => slot?.slotId)).size !== targets.length) throw new Error('방송 선택이 올바르지 않습니다.');
+    for (const target of targets) validSlot(target?.slotId);
+    if (!targets.length) throw new Error('보관할 방송을 먼저 열어 주세요.');
+    const summary = { succeeded: 0, failures: [] };
+    await Promise.all(targets.map(async ({ slotId, channelId }) => {
+      try {
+        if (!channelId || this.settings.slots[slotId] !== channelId) throw new Error('방송 배치가 변경되었어요.');
+        const state = this.recordings.status(slotId).state;
+        if ((enabled && !['starting', 'buffering'].includes(state)) || (!enabled && state !== 'idle')) await this.setBuffer({ slotId, enabled });
+        summary.succeeded++;
+      } catch (error) { summary.failures.push({ slotId, message: error.code ? '보관 작업을 처리하지 못했어요.' : error.message }); }
     }));
+    summary.failures.sort((a, b) => a.slotId - b.slotId);
+    return { ...this.getState(), actionSummary: summary };
+  }
+
+  saveClip({ slotId, seconds = this.settings.clipSeconds } = {}) {
+    return this.slotAction(slotId, () => this.recordings.save(slotId, seconds, record => this.registerClip(record)));
   }
 
   reloadSlot(slotId) {
@@ -225,9 +291,13 @@ class DeskController extends EventEmitter {
     return this.library.open(id);
   }
 
+  queryClips(arg) { return { ...this.library.query(arg, this.settings.channels), revision: this.clipRevision }; }
+  async updateClip(arg) { await this.library.update(arg); this.clipCounter++; this.publish(); return this.getState(); }
+  showClipInFolder(id) { return this.library.reveal(id); }
+
   showClipsFolder() { return this.library.showFolder(); }
   setPlayerBounds(bounds) { this.players.setBounds(bounds); }
-  beginShutdown() { this.autoClips.close(); this.players.beginShutdown(); this.recordings.beginShutdown(); }
+  beginShutdown() { this.quitting = true; this.autoClips.close(); this.players.beginShutdown(); this.recordings.beginShutdown(); }
   async shutdown() {
     this.autoClips.close();
     await this.recordings.shutdown();

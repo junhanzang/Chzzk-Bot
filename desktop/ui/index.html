@@ -34,6 +34,7 @@
     <main class="workspace">
       <section class="workspace-heading" aria-label="시청 환경">
         <div><div class="eyebrow">MY WATCH SPACE</div><h1>오늘도, 편하게 보세요.</h1></div>
+        <div id="watch-tools" class="watch-tools" aria-label="시청 모음과 전체 구간 보관"></div>
         <div class="workspace-tools"><span id="preview-badge" class="preview-badge" hidden>UI 미리보기</span><button id="mute-button" class="button button-quiet" type="button" title="앱 내부 방송의 소리를 끕니다. 크롬 방송의 소리는 확장에서 전환하세요."><span aria-hidden="true">◌</span> 앱 음소거 <kbd>M</kbd></button></div>
       </section>
 
@@ -58,10 +59,10 @@
       </section>
 
       <section class="bottom-grid" aria-label="클립과 사용 안내">
-        <div class="clips-panel"><header class="section-heading"><div><span class="eyebrow">SAVED MOMENTS</span><h2>놓치기 아까운 순간 <span id="clip-count" class="count">0</span></h2></div><button id="clips-folder" class="text-button" type="button">폴더 열기 <span aria-hidden="true">↗</span></button></header><input id="clip-search" class="collection-search" type="search" placeholder="방송·파일명으로 클립 검색" aria-label="방송 또는 파일명으로 클립 검색" autocomplete="off" maxlength="200"><div id="clips-list" class="clips-list"></div><p id="clips-no-results" class="search-empty" role="status" hidden>검색에 맞는 클립이 없어요.</p><div class="clips-empty" id="clips-empty"><div class="clip-empty-icon" aria-hidden="true">▤</div><div><strong>다시 보고 싶은 순간을 모아두세요.</strong><p>‘최근 구간 보관’을 켠 뒤 저장할 길이를 고르고 저장해요.</p></div></div><p class="search-scope">최근 클립 최대 100개에서 검색해요. 이전 파일은 폴더에서 확인하세요.</p></div>
+        <div class="clips-panel"><header class="section-heading"><div><span class="eyebrow">SAVED MOMENTS</span><h2>놓치기 아까운 순간 <span id="clip-count" class="count">0</span></h2></div><button id="clips-folder" class="text-button" type="button">폴더 열기 <span aria-hidden="true">↗</span></button></header><input id="clip-search" class="collection-search" type="search" placeholder="방송·파일명으로 클립 검색" aria-label="방송 또는 파일명으로 클립 검색" autocomplete="off" maxlength="200"><div id="clips-list" class="clips-list"></div><p id="clips-no-results" class="search-empty" role="status" hidden>검색에 맞는 클립이 없어요.</p><div class="clips-empty" id="clips-empty"><div class="clip-empty-icon" aria-hidden="true">▤</div><div><strong>다시 보고 싶은 순간을 모아두세요.</strong><p>‘최근 구간 보관’을 켠 뒤 저장할 길이를 고르고 저장해요.</p></div></div><p class="search-scope">저장한 클립 전체에서 검색해요.</p></div>
         <aside class="guide-panel browser-guide"><span class="eyebrow">DESK + CHROME</span><h2>크롬과 함께 쓰기</h2><p>크롬의 공식 플레이어로 시청하고,<br>앱에서 클립을 보관하세요.</p><div class="connection-buttons"><button id="browser-connect" class="button button-quiet" type="button">연결 코드 복사</button><button id="browser-reset" class="text-button" type="button">연결 초기화</button></div><p id="browser-connection-status" role="status">크롬 연결 준비 중</p><small>확장 프로그램의 ‘앱 연결’에 붙여 넣으세요.<br>앱을 다시 실행하면 새 코드로 연결해 주세요.</small></aside>
       </section>
-      <footer class="workspace-footer"><span title="앱 패널에서는 1~4로 소리 선택, M으로 앱 음소거">방송 화면 안: Ctrl+Alt+1~4 · Ctrl+Alt+M</span><span id="recorder-status">녹화 도구 확인 중</span><span>클립 길이는 방송 구간에 따라 조금 달라질 수 있어요.</span></footer>
+      <footer class="workspace-footer"><details class="keyboard-help"><summary>단축키 안내</summary><p>앱 패널: <kbd>1</kbd>–<kbd>4</kbd> 방송 듣기 · <kbd>M</kbd> 음소거<br>방송 화면 안: <kbd>Ctrl+Alt+1</kbd>–<kbd>4</kbd> 방송 듣기 · <kbd>Ctrl+Alt+M</kbd> 음소거<br><kbd>Ctrl+Shift+S</kbd> 선택한 길이의 클립 저장</p></details><span id="recorder-status">녹화 도구 확인 중</span><span>클립 길이는 방송 구간에 따라 조금 달라질 수 있어요.</span></footer>
     </main>
   </div>
 </body>

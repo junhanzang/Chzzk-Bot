@@ -6,6 +6,8 @@ function publicState(value) {
   return { version: value.version, channels: value.channels, slots: value.slots, clips: value.clips,
     layout: value.layout, mainSlot: value.mainSlot, clipSeconds: value.clipSeconds,
     autoClipSettings: value.autoClipSettings || {}, autoClips: value.autoClips || [],
+    watchPresets: value.watchPresets || [], clipRevision: value.clipRevision, clipTotal: value.clipTotal,
+    actionSummary: value.actionSummary || null,
     audioSlot: null, savingSlots: value.savingSlots, ffmpegAvailable: value.ffmpegAvailable,
     auth: { status: value.auth?.status || 'checking' } };
 }
@@ -26,6 +28,19 @@ function createBrowserHandlers({ actions, isQuitting = () => false }) {
     clearSlot: slotId => { validSlot(slotId); return actions.clearSlot(slotId); },
     setLayout: arg => actions.setLayout({ layout: arg?.layout, mainSlot: arg?.mainSlot }),
     setClipSeconds: seconds => actions.setClipSeconds(seconds),
+    renameChannel: arg => actions.renameChannel(arg),
+    setChannelPinned: arg => actions.setChannelPinned(arg),
+    saveWatchPreset: arg => actions.saveWatchPreset({ name: arg?.name }),
+    removeWatchPreset: id => actions.removeWatchPreset(id),
+    applyWatchPreset: id => actions.applyWatchPreset({ id, playbackMode: 'browser' }),
+    setAllBuffers: arg => {
+      if (!Array.isArray(arg?.slots) || arg.slots.length > 4) throw new Error('보관할 방송을 먼저 선택해 주세요.');
+      arg.slots.forEach(slot => browserSlot(slot));
+      return actions.setAllBuffers({ enabled: arg.enabled, slots: arg.slots.map(({ slotId, channelId }) => ({ slotId, channelId })) });
+    },
+    queryClips: arg => actions.queryClips(arg),
+    updateClip: arg => actions.updateClip(arg),
+    showClipInFolder: id => actions.showClipInFolder(id),
     setAutoClipSettings: arg => actions.setAutoClipSettings(arg),
     submitChatBatch: arg => { browserSlot(arg); return actions.submitChatBatch(arg); },
     setBuffer: arg => actions.setBuffer({ slotId: browserSlot(arg), enabled: arg?.enabled }),

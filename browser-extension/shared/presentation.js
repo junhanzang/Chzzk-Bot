@@ -22,7 +22,8 @@
 
   function filterChannels(items, query = '') {
     const queryTerms = terms(query);
-    return items.filter(item => matches([item.name, item.id], queryTerms));
+    return items.filter(item => matches([item.name, item.id], queryTerms))
+      .sort((a, b) => Number(b.pinned === true) - Number(a.pinned === true));
   }
 
   function filterClips(items, query = '', favorites = []) {

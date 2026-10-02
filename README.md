@@ -4,6 +4,8 @@
 
 ## 치지직 데스크 시제품
 
+현재 소스 0.5.0은 **시청 모음·즐겨찾기 이름 수정/상단 고정·전체 보관 제어**와 **클립 제목/별표/필터/정렬·전체 기록 검색·파일 위치 표시**를 앱과 Chrome에 제공합니다. [0.5.0 변경 내용](docs/releases/0.5.0.md)
+
 앱과 Chrome 확장을 처음 실행하려면 [짧은 시작 안내](START-HERE.md)를 확인하세요. `setup-chrome.cmd`는 Chrome 확장 등록 화면과 설치 폴더 경로를 준비합니다.
 
 [GitHub Releases](https://github.com/junhanzang/Chzzk-Bot/releases)에서 `desk-v` 버전의 Windows 설치 파일·ZIP과 Chrome 확장 ZIP을 제공합니다. PR·main 푸시에는 자동 검사와 패키징을 실행하고, `desk-v*` 태그는 검사 통과 후 시험 배포합니다. [CI/CD와 배포 안내](docs/RELEASING.md)

@@ -61,6 +61,7 @@
       <p class="layout-note">선택한 배치를 기억해요. ‘창 배치’를 누르면 열린 방송 창에 적용해요.</p>
       <div class="clip-options"><label for="clip-seconds">클립 저장 길이</label><select id="clip-seconds"><option value="15">15초</option><option value="30" selected>30초</option><option value="60">60초</option></select><span>모인 구간만큼 저장해요.</span></div>
       <div class="reward-options"><label class="buffer-toggle"><input id="auto-rewards" type="checkbox" aria-describedby="reward-help"><span class="switch" aria-hidden="true"></span><span>통나무 자동 수령</span></label><p id="reward-help">Chrome에서 시청 중 표시된 보상 자동 받기.<br>시청 시간은 한 방송만 집계돼요. 앱의 설정·로그인과는 별개예요.</p></div>
+      <div id="watch-tools" class="watch-tools" aria-label="시청 모음과 전체 구간 보관"></div>
       <div class="slots">
         <article id="slot-0" class="slot-card" data-slot="0" aria-labelledby="slot-0-title">
           <div class="slot-heading"><span class="slot-letter" aria-hidden="true">A</span><div class="slot-title"><h3 id="slot-0-title">A · 방송을 골라 주세요</h3><p data-role="page-status">첫 번째 시청 자리</p></div><button class="icon-button" type="button" data-action="clear-slot" data-slot="0" aria-label="A 자리 비우기" disabled>×</button></div>
@@ -89,10 +90,10 @@
       <p id="clips-no-results" class="empty-copy" role="status" hidden>검색에 맞는 클립이 없어요.</p>
       <ul id="clips-list" class="clips-list" aria-label="최근 저장한 클립"></ul>
       <p id="clips-limit" class="subtle" hidden>최근 10개를 표시해요. 전체 파일은 보관 폴더에서 확인하세요.</p>
-      <p class="subtle search-scope">최근 클립 최대 100개에서 검색해요. 이전 파일은 폴더에서 확인하세요.</p>
+      <p class="subtle search-scope">저장한 클립 전체에서 검색해요.</p>
     </section>
   </main>
 
-  <footer><span class="footer-dot" aria-hidden="true"></span><span>Chrome에서 시청 · 앱으로 순간 보관</span><p>Chrome 로그인과 앱 로그인은 별개예요.</p></footer>
+  <footer><span class="footer-dot" aria-hidden="true"></span><span>Chrome에서 시청 · 앱으로 순간 보관</span><p>Chrome 로그인과 앱 로그인은 별개예요.</p><details class="keyboard-help"><summary>단축키 안내</summary><p><kbd>Alt+Shift+1</kbd> / <kbd>Alt+Shift+2</kbd> A / B 방송 듣기<br><kbd>Alt+Shift+M</kbd> 전체 음소거<br><kbd>Ctrl+Shift+S</kbd> 앱으로 클립 저장<br>Chrome 확장 프로그램 단축키 설정에서 확인·변경할 수 있어요.</p></details></footer>
 </body>
 </html>

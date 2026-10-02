@@ -76,6 +76,44 @@ export class ManagedTabs {
     await this.persist();
   }
 
+  async prepareAssignments(assignments) {
+    // Keep ownership attached to the actual tab when channels swap or move.
+    // Every old record remains in a slot until replacements have been opened;
+    // unused records are released by the caller only after a target tab exists.
+    for (const slotId of this.model.SLOT_IDS) await this.getTab(slotId);
+    const previous = this.#slots, remaining = previous.filter(Boolean);
+    const next = this.model.SLOT_IDS.map(() => null);
+    const take = (slotId, record) => {
+      if (!record) return;
+      next[slotId] = record;
+      remaining.splice(remaining.indexOf(record), 1);
+    };
+    for (const slotId of this.model.SLOT_IDS) {
+      if (assignments[slotId]) take(slotId, remaining.find(record => record.channelId === assignments[slotId]));
+    }
+    for (const slotId of this.model.SLOT_IDS) {
+      if (!assignments[slotId] || next[slotId]) continue;
+      const reusable = record => Number.isInteger(record.tabId) && record.createdByDesk !== false;
+      take(slotId, remaining.find(record => record === previous[slotId] && reusable(record)) || remaining.find(reusable) ||
+        remaining.find(record => record === previous[slotId]) || remaining[0]);
+    }
+    for (const slotId of this.model.SLOT_IDS) {
+      if (!next[slotId]) take(slotId, remaining.find(record => record === previous[slotId]) || remaining[0]);
+    }
+    this.#slots = next;
+    if (this.#audioSlot !== null && next[this.#audioSlot] !== previous[this.#audioSlot]) this.#audioSlot = null;
+    await this.persist();
+    for (const slotId of this.model.SLOT_IDS) {
+      if (!next[slotId] || next[slotId] === previous[slotId]) continue;
+      const tab = await this.getTab(slotId);
+      if (tab) {
+        await this.chrome.tabs.update(tab.id, { muted: true });
+        await this.onOwnershipChange(tab.id);
+      }
+    }
+    await this.persist();
+  }
+
   async open(slotId, channel) {
     const channelId = channel.id;
     const old = await this.getTab(slotId), oldSlot = this.#slots[slotId];

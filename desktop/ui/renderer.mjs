@@ -5,6 +5,7 @@ import { createClipsView } from './clips.mjs';
 import { createPlayersView } from './players.mjs';
 import { createToolbarView } from './toolbar.mjs';
 import { createPlayerBounds } from './bounds.mjs';
+import { createWatchToolsView } from './watch-tools.mjs';
 
 const bridge = window.desk;
 let bounds;
@@ -12,10 +13,11 @@ const notice = createNoticeView({ element: document.querySelector('#notice'), ti
 const controller = createDesktopController({ bridge, onNotice: notice.show, onClearNotice: notice.hide });
 const players = createPlayersView({ document, run: controller.execute, notify: notice.show });
 const favorites = createFavoritesView({ document, run: controller.execute, onFocusSlot: players.focusSlot });
-const clips = createClipsView({ document, run: controller.execute });
+const clips = createClipsView({ document, run: controller.execute, queryClips: bridge ? arg => bridge.queryClips(arg) : undefined });
 const toolbar = createToolbarView({ document, run: controller.execute });
+const watchTools = createWatchToolsView({ document, run: controller.execute, notify: notice.show, onLayoutChange: () => bounds?.request() });
 bounds = createPlayerBounds({ document, window, cards: players.cards, sendBounds: bridge ? value => bridge.setPlayerBounds(value) : null, onError: notice.show });
-const views = [favorites, players, clips, toolbar];
+const views = [favorites, players, clips, toolbar, watchTools];
 const unsubscribe = controller.subscribe(snapshot => {
   for (const view of views) view.render(snapshot);
   bounds.update(snapshot.state.slots);

@@ -14,7 +14,7 @@ export function idleReplay() { return { state: 'idle', bufferedSeconds: 0 }; }
 
 export function blankRemote() {
   return { channels: [], slots: SLOT_IDS.map(slotId => ({ slotId, channelId: null, replay: idleReplay() })),
-    layout: 'side-by-side', mainSlot: 0, clipSeconds: 30,
+    layout: 'side-by-side', mainSlot: 0, clipSeconds: 30, watchPresets: [], clipRevision: null, clipTotal: 0, actionSummary: null,
     autoClipSettings: {}, autoClips: SLOT_IDS.map(slotId => ({ slotId, channelId: null, generation: null,
       status: 'unavailable', message: '자동 클립은 데스크톱 앱을 연결하면 사용할 수 있어요.' })),
     clips: [], savingSlots: [], ffmpegAvailable: false, auth: { status: 'signed_out' } };
@@ -39,8 +39,13 @@ export function sanitizeRemote(value, model) {
       id: item.id, fileName: typeof item.fileName === 'string' ? item.fileName : '', title: model.cleanTitle(item.title),
       channelId: typeof item.channelId === 'string' ? item.channelId : '', createdAt: item.createdAt,
       duration: Number(item.duration) || 0,
+      ...(item.favorite === true ? { favorite: true } : {}),
       ...(['keyword', 'chat-spike'].includes(item.trigger) ? { trigger: item.trigger } : {})
     })),
+    watchPresets: model.normalizeWatchPresets(value.watchPresets, channels),
+    clipRevision: typeof value.clipRevision === 'string' ? value.clipRevision.slice(0, 100) : null,
+    clipTotal: Number.isSafeInteger(value.clipTotal) && value.clipTotal >= 0 ? value.clipTotal : (value.clips || []).length,
+    actionSummary: null,
     autoClipSettings: model.normalizeAutoClipSettings(value.autoClipSettings, channels),
     autoClips: SLOT_IDS.map(slotId => {
       const source = (Array.isArray(value.autoClips) ? value.autoClips : []).find(item => item?.slotId === slotId) || {};
@@ -56,6 +61,16 @@ export function sanitizeRemote(value, model) {
     ffmpegAvailable: value.ffmpegAvailable === true,
     auth: { status: AUTH_STATES.has(value.auth?.status) ? value.auth.status : 'signed_out' }
   };
+}
+
+export function sanitizeClipPage(value, model) {
+  if (!value || !Array.isArray(value.items) || value.items.length > 100 || !Number.isSafeInteger(value.total) || value.total < 0 ||
+      !Number.isSafeInteger(value.offset) || value.offset < 0 || !Number.isInteger(value.limit) || value.limit < 1 || value.limit > 100) {
+    throw new Error('클립 목록을 읽지 못했어요. 앱을 다시 연결해 주세요.');
+  }
+  const items = sanitizeRemote({ channels: [], slots: [], clips: value.items }, model).clips;
+  return { items, total: value.total, offset: value.offset, limit: value.limit,
+    revision: typeof value.revision === 'string' ? value.revision.slice(0, 100) : null };
 }
 
 /** Loopback RPC is separate from Chrome-session reward GETs. It never forwards browser credentials. */
