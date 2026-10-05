@@ -14,9 +14,11 @@ def build_parser():
     actions.add_argument("--doctor", action="store_true", help="설정·패키지·Ollama 준비 상태 진단")
     actions.add_argument("--demo", action="store_true", help="모델 없이 기본 방송 상황 예제로 검사")
     actions.add_argument("--replay", metavar="JSON", help="저장한 방송 상황을 채팅 전송 없이 재현")
+    actions.add_argument("--evaluate", nargs="?", const="", metavar="JSON", help="실제 모델로 독립 상황 품질 평가 (생략 시 기본 20개, 전송 없음)")
     actions.add_argument("--list-speakers", action="store_true", help="사용 가능한 출력 장치의 ID 표시")
     parser.add_argument("--generate", action="store_true", help="--demo/--replay에서 Ollama로 답변 생성 (채팅 전송 없음)")
-    parser.add_argument("--report", metavar="JSON", help="--demo/--replay 결과를 JSON 파일로 저장")
+    parser.add_argument("--report", metavar="JSON", help="--demo/--replay/--evaluate 결과를 JSON 파일로 저장")
+    parser.add_argument("--model", metavar="NAME", help="--evaluate에서 이번 평가에만 사용할 Ollama 모델")
     parser.add_argument("--channel", metavar="URL_OR_ID", help="이번 실행의 치지직 방송 URL 또는 채널 ID")
     parser.add_argument("--mode", choices=("ai", "hybrid", "mimic"), help="이번 실행의 응답 모드")
     parser.add_argument("--speaker", metavar="ID", help="출력 장치 ID (--list-speakers로 확인)")
@@ -30,8 +32,13 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     replaying = args.demo or args.replay is not None
-    if (args.generate or args.report) and not replaying:
-        parser.error("--generate와 --report는 --demo 또는 --replay와 함께 사용하세요.")
+    evaluating = args.evaluate is not None
+    if args.generate and not replaying:
+        parser.error("--generate는 --demo 또는 --replay와 함께 사용하세요. --evaluate는 자체적으로 모델을 실행합니다.")
+    if args.report and not (replaying or evaluating):
+        parser.error("--report는 --demo, --replay 또는 --evaluate와 함께 사용하세요.")
+    if args.model and not evaluating:
+        parser.error("--model은 --evaluate와 함께 사용하세요.")
     if (args.setup or args.menu) and args.non_interactive:
         parser.error("--setup과 --menu는 입력이 필요하므로 --non-interactive와 함께 사용할 수 없습니다.")
     if args.menu:
@@ -61,18 +68,22 @@ def main(argv=None):
             return 1
     from config import Config
     Config.load(overrides={"CHZZK_CHANNEL_ID": args.channel, "RESPONSE_MODE": args.mode,
-                           "AUDIO_SPEAKER_ID": args.speaker})
+                           "AUDIO_SPEAKER_ID": args.speaker,
+                           "OLLAMA_MODEL": args.model if evaluating else None})
     if args.doctor:
         from bot.diagnostics import run_doctor
         return run_doctor(Config)
     try:
-        Config.validate(require_channel=args.non_interactive and not replaying)
+        Config.validate(require_channel=args.non_interactive and not (replaying or evaluating))
     except ValueError as error:
         print(error, file=sys.stderr)
         return 2
     if replaying:
         from bot.replay import run_replay
         return run_replay(args.replay, generate=True, report_path=args.report)
+    if evaluating:
+        from bot.evaluation import run_evaluation
+        return run_evaluation(args.evaluate or None, report_path=args.report, model_name=args.model)
     if args.non_interactive and not args.mock and not args.auto:
         print("--non-interactive 실전 실행은 --auto가 필요합니다. 전송 없이 확인하려면 --mock을 쓰세요.", file=sys.stderr)
         return 2

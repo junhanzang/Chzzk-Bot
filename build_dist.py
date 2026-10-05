@@ -22,7 +22,8 @@ SOURCE_FILES = (
     "audio_buffer.py", "audio_capture.py", "speech_recognition.py",
     "llm_handler.py", "chat_reader.py", "chat_sender.py", "requirements.txt",
     ".env.example", "LICENSE", "README.md", "start-bot.cmd",
-    "examples/bot-demo.json", "docs/BOT.md", "docs/BOT_ARCHITECTURE.md",
+    "examples/bot-demo.json", "examples/bot-quality.json",
+    "docs/BOT.md", "docs/BOT_ARCHITECTURE.md",
 )
 PACKAGE_DIRS = ("bot", "memory")
 

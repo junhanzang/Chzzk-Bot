@@ -110,24 +110,41 @@ class SpeechWorkers:
             return None
         chat_context = bot.chat_reader.get_chat_context(10, filter_reactions=True,
             max_age_seconds=Config.CHAT_CONTEXT_MAX_AGE_SECONDS) if bot.chat_reader else ""
-        if Config.SMART_RESPONSE and not bot.llm_handler.should_respond(text, chat_context):
-            bot.metrics.increment("skipped")
+        memories = {
+            "streamer_memory": bot.streamer_memory.get_facts_as_prompt(),
+            "chat_memory": bot.chat_memory.get_facts_as_prompt(),
+            "my_chat_memory": bot.my_chat_memory.get_facts_as_prompt(),
+        }
+        speech_context = bot.speech_context.recent(observation)
+        # Context collection and inference share the original observation's TTL.
+        # Participation and wording are decided in one request with the same context.
+        remaining = bot.pipeline.max_age_seconds - (time.monotonic() - observation.observed_at)
+        if remaining <= 0:
+            bot.metrics.increment("fresh_expired")
             return None
-        # The optional judge is another model call; it must not renew the input's age.
         if not bot.pipeline.accepts(observation.observed_at, observation.generation):
             bot.metrics.increment("fresh_expired")
             return None
         bot.stats["processed_speeches"] += 1
-        response = bot.llm_handler.generate_response(
+        result = bot.llm_handler.generate_result(
             text, chat_context,
-            streamer_memory=bot.streamer_memory.get_facts_as_prompt(),
-            chat_memory=bot.chat_memory.get_facts_as_prompt(),
-            my_chat_memory=bot.my_chat_memory.get_facts_as_prompt(),
-            speech_context=bot.speech_context.recent(observation),
+            **memories,
+            speech_context=speech_context,
+            timeout_seconds=min(30.0, remaining),
         )
+        if result.status != "generated":
+            metric, message = {
+                "skipped": ("skipped", "이 발화에는 반응하지 않기로 했어요."),
+                "filtered": ("invalid_response", "응답이 전송 전 필터에 걸렸어요."),
+                "error": ("generation_failed", "응답 생성에 실패했어요."),
+            }.get(result.status, ("generation_failed", "응답 결과 형식이 올바르지 않아요."))
+            bot.metrics.increment(metric)
+            print(f"[LLM] {message}")
+            return None
+        response = result.response
         if not response:
-            bot.metrics.increment("skipped")
-            print("[LLM] 응답 생략 또는 생성 실패")
+            bot.metrics.increment("generation_failed")
+            print("[LLM] 생성 결과에 응답이 없어요.")
             return None
         if bot._is_simple_reaction(response):
             bot.metrics.increment("skipped")

@@ -10,6 +10,7 @@ import pytest
 from bot.cli import main
 from bot.settings import DEFAULTS
 from config import Config
+from bot.generation import GenerationResult
 
 CHANNEL = "b" * 32
 ROOT = Path(__file__).resolve().parent.parent
@@ -141,9 +142,9 @@ def test_generated_replay_cli_uses_model_adapter_without_account_or_channel(cli_
         def check_connection(self):
             calls.append("check")
             return True
-        def generate_response(self, speech, chat, **kwargs):
+        def generate_result(self, speech, chat, **kwargs):
             calls.append((speech, kwargs["speech_context"]))
-            return "쉬어도 좋겠네"
+            return GenerationResult("generated", "쉬어도 좋겠네", "쉬어도 좋겠네", "reply")
         def validate_response(self, text):
             return text
         def record_sent_response(self, speech, text):
@@ -170,3 +171,29 @@ def test_generated_replay_missing_model_has_actionable_exit(cli_config, monkeypa
         LLMHandler=lambda **_: SimpleNamespace(check_connection=lambda: False)))
     assert main(["--demo", "--generate"]) == 2
     assert "--doctor" in capsys.readouterr().out
+
+
+def test_evaluation_cli_default_suite_and_model_override_are_text_only(cli_config, monkeypatch):
+    calls = []
+    monkeypatch.setitem(sys.modules, "bot.evaluation", SimpleNamespace(run_evaluation=lambda *a, **kw: calls.append((a, kw)) or 0))
+    monkeypatch.setitem(sys.modules, "bot.runtime", None)
+    monkeypatch.setitem(sys.modules, "chat_sender", None)
+    assert main(["--evaluate", "--model", "test:small", "--non-interactive"]) == 0
+    assert calls == [((None,), {"report_path": None, "model_name": "test:small"})]
+    assert Config.OLLAMA_MODEL == "test:small"
+    assert not cli_config.exists(), "Evaluation model selection must not rewrite saved settings"
+
+
+def test_evaluation_cli_explicit_suite_and_report(cli_config, monkeypatch):
+    calls = []
+    monkeypatch.setitem(sys.modules, "bot.evaluation", SimpleNamespace(run_evaluation=lambda *a, **kw: calls.append((a, kw)) or 1))
+    assert main(["--evaluate", "suite.json", "--report", "review.json"]) == 1
+    assert calls == [(("suite.json",), {"report_path": "review.json", "model_name": None})]
+
+
+@pytest.mark.parametrize("args", [["--model", "a"], ["--demo", "--model", "a"],
+                                  ["--evaluate", "--generate"], ["--evaluate", "--demo"]])
+def test_evaluation_cli_rejects_ambiguous_actions(args):
+    with pytest.raises(SystemExit) as error:
+        main(args)
+    assert error.value.code == 2

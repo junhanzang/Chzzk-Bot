@@ -7,17 +7,17 @@ Neither path loads audio, browsers, a chat client, or a persistent memory store.
 from collections import deque
 import json
 import math
-import os
 from pathlib import Path
-import tempfile
 import time
 
+from bot.reports import write_report as _write_report
+from bot.generation import GenerationResult
 from core_logic import guard_chat_message, postprocess_llm_response
 from response_pipeline import ResponseCandidate, ResponsePipeline, SpeechContext, SpeechObservation
 
 
 DEMO_PATH = Path(__file__).resolve().parents[1] / "examples" / "bot-demo.json"
-STATUSES = {"accepted", "expired", "cooldown", "skipped", "filtered"}
+STATUSES = {"accepted", "expired", "cooldown", "skipped", "filtered", "error"}
 
 
 def load_scenario(path):
@@ -104,22 +104,51 @@ def replay_events(events, *, handler_factory=None, max_age_seconds=20, cooldown_
         candidate = ResponseCandidate(observation.text, "", event.get("chat", ""), observation.observed_at, 0)
         row = {"index": index, "at": event["at"], "speech": observation.text,
                "prior_speech": list(prior), "response": None, "latency_seconds": 0.0}
-        if not pipeline.is_current(candidate):
+        if handler is not None:
+            row.update(generation_status="not_run", generation_reason="not_requested", raw_text="")
+        remaining = pipeline.max_age_seconds - (now[0] - observation.observed_at)
+        if not pipeline.is_current(candidate) or (handler is not None and remaining <= 0):
             status = "expired"
+            if handler is not None:
+                row["generation_reason"] = "expired_before_generation"
         elif not pipeline.can_send(candidate):
             status = "cooldown"
+            if handler is not None:
+                row["generation_reason"] = "cooldown_before_generation"
         else:
             started = elapsed_clock()
-            draft = (handler.generate_response(observation.text, event.get("chat", ""), speech_context=prior)
-                     if handler is not None else event.get("draft"))
+            generation = None
+            if handler is not None:
+                try:
+                    generation = handler.generate_result(
+                        observation.text, event.get("chat", ""), speech_context=prior,
+                        timeout_seconds=min(30.0, remaining))
+                    if (generation.status not in ("generated", "skipped", "filtered", "error")
+                            or not isinstance(generation.raw_text, str) or not isinstance(generation.reason, str)
+                            or (generation.status == "generated" and
+                                (not isinstance(generation.response, str) or not generation.response.strip()))
+                            or (generation.status != "generated" and generation.response is not None)):
+                        raise ValueError("invalid_generation_result")
+                except Exception as error:
+                    # Request errors can contain URLs/tokens; keep only the class.
+                    generation = GenerationResult("error", reason=f"exception:{type(error).__name__}")
+                row.update(generation_status=generation.status, generation_reason=generation.reason,
+                           raw_text=generation.raw_text)
+                draft = generation.response
+            else:
+                draft = event.get("draft")
             latency = max(0.0, elapsed_clock() - started) if handler is not None else 0.0
             now[0] += latency + event.get("delay", 0)
             row["latency_seconds"] = round(latency, 3)
             response = postprocess_llm_response(draft)
             if not pipeline.is_current(candidate):
                 status = "expired"
-            elif event.get("action") == "skip" or response is None:
+            elif generation is not None and generation.status != "generated":
+                status = generation.status
+            elif event.get("action") == "skip":
                 status = "skipped"
+            elif response is None:
+                status = "filtered" if generation is not None else "skipped"
             else:
                 response = responder.validate_response(event.get("edit") if event.get("action") == "edit" else response)
                 if response is None:
@@ -137,29 +166,12 @@ def replay_events(events, *, handler_factory=None, max_age_seconds=20, cooldown_
         rows.append(row)
     pipeline.close()
     counts = {status: sum(row["status"] == status for row in rows) for status in sorted(STATUSES)}
+    generation_errors = sum(row.get("generation_status") == "error" for row in rows)
     return {"version": 1, "source": "ollama" if handler is not None else "prepared_drafts",
             "actual_messages_sent": 0, "counts": counts, "events": rows,
-            "expectations_passed": all(row.get("matches_expected", True) for row in rows),
+            "generation_errors": generation_errors,
+            "expectations_passed": not generation_errors and all(row.get("matches_expected", True) for row in rows),
             "note": "반응 규칙과 전달 문맥을 확인하는 리플레이입니다. 자연스러움·사실성은 사람이 별도로 평가하세요."}
-
-
-def _write_report(path, report):
-    path = Path(path)
-    if path.suffix.lower() != ".json":
-        raise ValueError("보고서 경로는 .json으로 지정하세요.")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False) as stream:
-            temporary = Path(stream.name)
-            json.dump(report, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def run_replay(path=None, *, generate=False, report_path=None):
@@ -187,11 +199,13 @@ def run_replay(path=None, *, generate=False, report_path=None):
         report = replay_events(events, handler_factory=factory, **options)
         print("\n문장 리플레이 - 실제 채팅 전송 없음")
         print("Ollama로 답변을 생성합니다." if generate else "준비된 예시 답변으로 동작을 확인합니다 (AI 품질 평가 아님).")
-        labels = {"accepted": "전송 가능", "expired": "만료", "cooldown": "간격 대기", "skipped": "생략", "filtered": "응답 필터"}
+        labels = {"accepted": "전송 가능", "expired": "만료", "cooldown": "간격 대기", "skipped": "생략", "filtered": "응답 필터", "error": "모델 오류"}
         for row in report["events"]:
             print(f"  {row['index']:02d}. [{labels[row['status']]}] {row['speech']}")
             if row["response"]:
                 print(f"      → {row['response']}")
+            if row.get("generation_status") == "error":
+                print(f"      모델 오류: {row['generation_reason']}")
         if report_path:
             _write_report(report_path, report)
             print(f"보고서: {Path(report_path).resolve()}")

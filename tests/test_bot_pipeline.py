@@ -32,6 +32,8 @@ def runtime(monkeypatch):
     bot.pipeline = ResponsePipeline(mode='hybrid', max_age_seconds=20, cooldown_seconds=10, clock=lambda: now[0])
     bot.speech_context = SpeechContext(clock=lambda: now[0])
     bot.llm_handler = LLMHandler(model_name='fake', host='http://unused', banned_words=('금칙어',))
+    monkeypatch.setattr('llm_handler.requests.post',
+        lambda *args, **kwargs: pytest.fail('Offline orchestration must not call a model'))
     records, sent = [], []
     bot.memory_manager = SimpleNamespace(record_interaction=lambda *args: records.append(args))
     memory = SimpleNamespace(get_facts_as_prompt=lambda: '')
@@ -48,18 +50,28 @@ def candidate(runtime, text='다른 길도 있겠네', kind='ai'):
         runtime.now[0], runtime.bot.pipeline.generation, kind)
 
 
-def test_short_question_keeps_unsent_surrounding_speech_and_hybrid_can_generate(runtime):
+def generation_result(response='두 번째 상자도 궁금하네', *, status='generated'):
+    return SimpleNamespace(status=status, response=response, raw_text=response,
+                           reason='', latency_seconds=0.0)
+
+
+@pytest.mark.parametrize('smart_response', [False, True])
+def test_short_question_keeps_context_and_uses_one_model_call(runtime, monkeypatch, smart_response):
     f = runtime
+    monkeypatch.setattr(f.module.Config, 'SMART_RESPONSE', smart_response)
     first = SpeechObservation('첫 번째 상자는 이미 열었어', 98, 0)
     target = SpeechObservation('그 다음은?', 99, 0)
     f.bot._observe_speech(first)
     f.bot._observe_speech(target)
     assert f.bot._drain_speech_queue() == target
     calls = []
-    f.bot.llm_handler.generate_response = lambda *args, **kwargs: calls.append((args, kwargs)) or '두 번째 상자도 궁금하네'
+    f.bot.llm_handler.should_respond = lambda *args, **kwargs: pytest.fail('No separate participation request')
+    f.bot.llm_handler.generate_result = lambda *args, **kwargs: calls.append((args, kwargs)) or generation_result()
     draft = f.bot._generate_candidate(target)
     assert draft.text == '두 번째 상자도 궁금하네'
+    assert len(calls) == 1
     assert calls[0][1]['speech_context'] == ('첫 번째 상자는 이미 열었어',)
+    assert calls[0][1]['timeout_seconds'] == 19
     assert not f.bot.llm_handler.context
 
 
@@ -73,10 +85,65 @@ def test_slow_generation_cannot_enqueue_an_obsolete_reply(runtime, change):
             f.bot._cycle_mode()
         else:
             f.bot.pipeline.close()
-        return '이미 지난 장면의 답'
-    f.bot.llm_handler.generate_response = generate
+        return generation_result('이미 지난 장면의 답')
+    f.bot.llm_handler.generate_result = generate
     assert f.bot._generate_candidate(SpeechObservation('지금 어느 길로 갈까?', 100, 0)) is None
+    assert f.bot.metrics.snapshot()['fresh_expired'] == 1
     assert not f.sent
+
+
+@pytest.mark.parametrize('status, metric', [
+    ('skipped', 'skipped'), ('filtered', 'invalid_response'), ('error', 'generation_failed'),
+])
+def test_model_decision_and_failure_have_distinct_metrics(runtime, status, metric):
+    f = runtime
+    f.bot.llm_handler.generate_result = lambda *args, **kwargs: generation_result(None, status=status)
+    assert f.bot._generate_candidate(SpeechObservation('짧은 발화', 100, 0)) is None
+    assert f.bot.metrics.snapshot() == {metric: 1}
+    assert not f.sent and not f.records and not f.bot.llm_handler.context
+
+
+@pytest.mark.parametrize('ttl, observed_at, timeout', [
+    (20, 90, 10), (20, 99.75, 19.75), (60, 100, 30),
+])
+def test_inference_timeout_is_bounded_by_original_capture_age(runtime, ttl, observed_at, timeout):
+    f = runtime
+    f.bot.pipeline = ResponsePipeline(mode='hybrid', max_age_seconds=ttl, clock=lambda: f.now[0])
+    calls = []
+    f.bot.llm_handler.generate_result = lambda *args, **kwargs: calls.append(kwargs) or generation_result()
+    assert f.bot._generate_candidate(SpeechObservation('지금 질문', observed_at, 0)) is not None
+    assert calls[0]['timeout_seconds'] == timeout
+
+
+def test_context_collection_time_is_deducted_from_inference_budget(runtime):
+    f = runtime
+    def read_memory():
+        f.now[0] += 1
+        return '방송 참고 정보'
+    memory = SimpleNamespace(get_facts_as_prompt=read_memory)
+    f.bot.streamer_memory = f.bot.chat_memory = f.bot.my_chat_memory = memory
+    calls = []
+    f.bot.llm_handler.generate_result = lambda *args, **kwargs: calls.append(kwargs) or generation_result()
+    assert f.bot._generate_candidate(SpeechObservation('지금 질문', 90, 0)) is not None
+    assert calls[0]['timeout_seconds'] == 7
+    assert calls[0]['streamer_memory'] == '방송 참고 정보'
+
+
+@pytest.mark.parametrize('expires_during_context', [False, True])
+def test_exhausted_capture_deadline_never_starts_inference(runtime, expires_during_context):
+    f = runtime
+    if expires_during_context:
+        def read_memory():
+            f.now[0] = 120
+            return ''
+        f.bot.streamer_memory = SimpleNamespace(get_facts_as_prompt=read_memory)
+        observed_at = 100
+    else:
+        observed_at = 80
+    f.bot.llm_handler.generate_result = lambda *args, **kwargs: pytest.fail('No budget remains')
+    assert f.bot._generate_candidate(SpeechObservation('지난 질문', observed_at, 0)) is None
+    assert f.bot.metrics.snapshot() == {'fresh_expired': 1}
+    assert f.bot.stats['processed_speeches'] == 0
 
 
 @pytest.mark.parametrize('choice', ['s', 'm'])
@@ -160,7 +227,7 @@ def test_mode_change_discards_late_asr_and_stale_ai_is_not_run(runtime):
     f.bot._cycle_mode()
     f.bot._observe_speech(SpeechObservation('이전 모드 음성', 100, 0))
     assert f.bot.speech_queue.empty()
-    f.bot.llm_handler.generate_response = lambda *args, **kwargs: pytest.fail('No obsolete model call')
+    f.bot.llm_handler.generate_result = lambda *args, **kwargs: pytest.fail('No obsolete model call')
     assert f.bot._generate_candidate(SpeechObservation('이미 지난 음성', 70, 1)) is None
 
 

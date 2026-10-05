@@ -48,6 +48,7 @@ def test_distribution_includes_runtime_and_excludes_private_data(tmp_path):
         names = bundle.namelist()
         assert "main.py" in names and "start-bot.cmd" in names
         assert "examples/bot-demo.json" in names and "bot/replay.py" in names
+        assert "examples/bot-quality.json" in names and "bot/evaluation.py" in names
         assert {p.relative_to(root).as_posix() for p in (root / "bot").glob("*.py")} <= set(names)
         assert not any(name == ".env" or name.startswith(("data/", "models/", ".git/")) or "__pycache__" in name for name in names)
         extracted = tmp_path / "unpacked"

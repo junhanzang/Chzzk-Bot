@@ -9,7 +9,7 @@ class SessionMetrics:
     LABELS = {
         "observed": "인식", "proposed": "제안", "sent": "전송",
         "skipped": "생략", "fresh_expired": "만료", "cooldown": "간격 대기",
-        "invalid_response": "응답 필터", "generation_failed": "생성 생략/실패",
+        "invalid_response": "응답 필터", "generation_failed": "생성 실패",
         "send_failed": "전송 실패", "asr_error": "음성 오류",
         "llm_error": "AI 오류", "mimic_error": "반응 오류",
         "response_error": "처리 오류",

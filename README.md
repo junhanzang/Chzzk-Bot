@@ -2,14 +2,17 @@
 
 치지직(Chzzk) 스트리밍 플랫폼에서 스트리머의 음성을 실시간으로 인식하고, 채팅 분위기를 파악하여 로컬 LLM으로 자연스러운 채팅 메시지를 자동 생성하는 봇입니다.
 
-**채팅 봇은 `start-bot.cmd`로 시작합니다.** 설정 마법사 → 사전 진단 → 전송 없는 미리보기를 메뉴에서 선택하세요. 도움말과 모델 없는 데모는 추가 패키지 없이 실행됩니다. [처음 사용하기·문장 리플레이](docs/BOT.md) · [봇 모듈 구조](docs/BOT_ARCHITECTURE.md)
+**채팅 봇은 `start-bot.cmd`로 시작합니다.** 설정 마법사 → 사전 진단 → 전송 없는 미리보기를 메뉴에서 선택하세요. 도움말과 모델 없는 데모는 추가 패키지 없이 실행됩니다. [처음 사용하기·20개 상황 평가·문장 리플레이](docs/BOT.md) · [봇 모듈 구조](docs/BOT_ARCHITECTURE.md)
 
 ```powershell
 python main.py --demo                  # 장치·모델·계정 없이 동작 확인
 python main.py --setup                 # 처음 한 번 설정 저장
 python main.py --doctor                # 설정·패키지·Ollama 점검
 python main.py --mock --non-interactive # 저장한 설정으로 미리보기
+python main.py --evaluate              # 준비된 Ollama 모델로 20개 상황 평가, 전송 없음
 ```
+
+AI의 참여 여부와 답변은 같은 요청에서 판단하며 정상 생략·필터 차단·모델 오류를 구분합니다. 평가는 `outputs/bot-quality-report.json`에 상황별 응답·시간·검토 기준을 저장합니다. 모델이 없으면 자동 설치 없이 **미측정**으로 기록합니다. 응답/생략 선택 일치율과 실제 말투의 자연스러움은 별도로 확인해야 합니다.
 
 ## 치지직 데스크 시제품
 
