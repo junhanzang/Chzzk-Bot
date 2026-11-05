@@ -4,7 +4,10 @@ const http = require('node:http');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 
 const RPC_METHODS = Object.freeze(['getState', 'addChannel', 'removeChannel', 'assignSlot', 'clearSlot',
-  'setBuffer', 'saveClip', 'openClip', 'showClipsFolder', 'setLayout', 'setClipSeconds']);
+  'setBuffer', 'saveClip', 'openClip', 'showClipsFolder', 'setLayout', 'setClipSeconds',
+  'renameChannel', 'setChannelPinned', 'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers',
+  'queryClips', 'updateClip', 'showClipInFolder', 'setAutoClipSettings', 'submitChatBatch',
+  'getBotState', 'previewBot', 'startBot', 'stopBot', 'approveBot', 'openDeskSection']);
 const EXTENSION_ORIGIN = /^chrome-extension:\/\/[a-p]{32}$/;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_COMMANDS = 8;

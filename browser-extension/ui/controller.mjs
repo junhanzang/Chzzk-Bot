@@ -5,10 +5,10 @@ import { initialState } from './state.mjs';
 // Owns remote snapshots, serialized commands, visibility polling, and revision
 // guards. Views have no Chrome runtime access and no refresh timers.
 export function createPanelController({ sendMessage, document, onNotice, timers = globalThis }) {
-  let state = initialState(), pending = false, revision = 0, refreshPromise = null;
-  let timer = null, seenNoticeAt = null, disposed = false, started = false;
+  let state = initialState(), pending = false, pendingCount = 0, revision = 0, refreshPromise = null;
+  let timer = null, seenNoticeAt = null, disposed = false, started = false, initialized = false;
   const listeners = new Set(), events = createEventScope();
-  const snapshot = () => ({ state, pending });
+  const snapshot = () => ({ state, pending, initialized });
   function publish() { if (!disposed) { const value = snapshot(); for (const listener of listeners) listener(value); } }
   async function send(method, arg) {
     const response = await sendMessage({ target: 'desk', method, arg });
@@ -25,6 +25,7 @@ export function createPanelController({ sendMessage, document, onNotice, timers 
       savingSlots: Array.isArray(next.savingSlots) ? next.savingSlots : [],
       connection: next.connection || { status: 'standalone' }, auth: next.auth || { status: 'unknown' }
     };
+    initialized = true;
     publish();
     if (typeof next.notice?.message === 'string' && Number.isFinite(next.notice.at) && next.notice.at !== seenNoticeAt) {
       seenNoticeAt = next.notice.at;
@@ -44,18 +45,19 @@ export function createPanelController({ sendMessage, document, onNotice, timers 
     if (refreshPromise === request) refreshPromise = null;
   }
   async function execute(method, arg, success) {
-    if (pending || disposed) return false;
+    if ((pending && method !== 'stopBot') || disposed) return false;
+    pendingCount++;
     pending = true;
-    revision++;
+    const commandRevision = ++revision;
     publish();
     let succeeded = false;
     try {
       const result = await send(method, arg);
-      if (!disposed && Array.isArray(result?.channels) && Array.isArray(result.slots)) accept(result);
+      if (!disposed && commandRevision === revision && Array.isArray(result?.channels) && Array.isArray(result.slots)) accept(result);
       succeeded = true;
-      if (success && !disposed) onNotice(success);
+      if (success && !disposed && commandRevision === revision) onNotice(success);
     } catch (error) { if (!disposed) onNotice(error.message || '요청을 처리하지 못했어요.', true); }
-    finally { await refresh(true); pending = false; publish(); }
+    finally { await refresh(true); pendingCount--; pending = pendingCount > 0; publish(); }
     return !disposed && succeeded;
   }
   function schedule() {

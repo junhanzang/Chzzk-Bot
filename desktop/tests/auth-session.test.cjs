@@ -5,6 +5,19 @@ const { EventEmitter } = require('node:events');
 const { AuthSession, trustedRemote } = require('../lib/auth-session.cjs');
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
+test('bot login handoff reads only app cookies for the fixed CHZZK origin and keeps public state private', async () => {
+  const reads = [];
+  const session = { cookies: { get: async filter => { reads.push(filter); return [{ name: 'NID_AUT', value: 'secretAut' }, { name: 'NID_SES', value: 'secretSes' }, { name: 'unrelated', value: 'other' }]; } } };
+  const auth = new AuthSession({ session });
+  assert.equal(reads.length, 0);
+  assert.deepEqual(await auth.readBotAuth(), { nidAut: 'secretAut', nidSes: 'secretSes' });
+  assert.deepEqual(reads, [{ url: 'https://chzzk.naver.com/' }]);
+  assert(!JSON.stringify(auth.state).includes('secret'));
+  session.cookies.get = async () => [{ name: 'NID_AUT', value: 'onlyOne' }];
+  await assert.rejects(auth.readBotAuth(), /네이버 로그인/);
+  auth.close(); await assert.rejects(auth.readBotAuth(), /종료/);
+});
+
 function fixture(fetchImpl = async () => ({ ok: true, json: async () => ({ content: { loggedIn: false } }) }), options = {}) {
   const windows = [], calls = [], changes = [], notices = [];
   class Window extends EventEmitter {

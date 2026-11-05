@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>치지직 데스크 · Chrome</title>
   <link rel="stylesheet" href="panel.css">
+  <link rel="stylesheet" href="shared/ui/workspace.css">
   <script type="module" src="panel.js"></script>
 </head>
 <body>
@@ -15,6 +16,11 @@
   </header>
 
   <main>
+    <nav id="section-navigation" class="section-navigation" aria-label="패널 화면">
+      <button type="button" data-section="watch" aria-pressed="true">시청</button>
+      <button type="button" data-section="clips" aria-pressed="false">클립</button>
+      <button type="button" data-section="bot" aria-pressed="false">봇</button>
+    </nav>
     <section class="connection-section" aria-label="앱 연결 상태">
       <p id="connection-description" class="connection-description" role="status" aria-live="polite">Chrome 탭에서 최대 네 방송을 관리해요.</p>
       <details id="pairing-details" class="pairing">
@@ -38,24 +44,7 @@
       <button type="button" class="icon-button" data-action="dismiss" aria-label="알림 닫기">×</button>
     </div>
 
-    <section aria-labelledby="channels-heading">
-      <div class="section-heading"><h2 id="channels-heading">즐겨찾기 <span id="channel-count" class="count">0</span></h2></div>
-      <form id="channel-form" class="channel-form">
-        <label class="sr-only" for="channel-input">치지직 방송 URL 또는 채널 ID</label>
-        <input id="channel-input" type="text" placeholder="방송 URL 또는 채널 ID" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="2048" required>
-        <div class="form-row">
-          <label class="sr-only" for="channel-name">즐겨찾기 이름, 선택 사항</label>
-          <input id="channel-name" type="text" placeholder="이름 (선택)" autocomplete="off" maxlength="60">
-          <button id="add-button" class="button accent" type="submit">추가</button>
-        </div>
-      </form>
-      <input id="channel-search" class="collection-search" type="search" placeholder="즐겨찾기 검색" aria-label="즐겨찾기 이름 또는 채널 ID 검색" autocomplete="off" maxlength="200">
-      <div id="channels-empty" class="empty-state"><span aria-hidden="true">◇</span><p>자주 보는 방송을 추가하고<br>A / B / C / D에 열어 보세요.</p></div>
-      <p id="channels-no-results" class="empty-copy" role="status" hidden>검색에 맞는 채널이 없어요.</p>
-      <ul id="channels-list" class="channels-list" aria-label="즐겨찾는 방송"></ul>
-    </section>
-
-    <section aria-labelledby="slots-heading">
+    <section data-section-panel="watch" aria-labelledby="slots-heading">
       <div class="section-heading"><h2 id="slots-heading">시청 자리</h2><div class="section-tools"><button id="mute-button" class="button quiet small" type="button" data-action="mute" aria-pressed="true" title="전체 음소거 · Alt+Shift+M">전체 음소거</button></div></div>
       <div class="layout-options"><label for="layout-select">배치</label><select id="layout-select"><option value="side-by-side">나란히</option><option value="stacked">세로</option><option value="grid">4분할</option><option value="focus">메인 크게</option></select><label for="main-slot-select">메인</label><select id="main-slot-select" aria-label="메인 방송"><option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option></select><button id="arrange-button" class="button small" type="button" data-action="arrange" disabled>창 배치</button></div>
       <p class="layout-note">선택한 배치를 기억해요. ‘창 배치’를 누르면 열린 방송 창에 적용해요.</p>
@@ -83,6 +72,26 @@
       <p class="viewing-note">방송은 공식 치지직 Chrome 탭으로 열려요. 소리가 안 나면 플레이어의 음소거도 확인해 주세요.</p>
     </section>
 
+    <details class="favorites-drawer" data-section-panel="watch"><summary>즐겨찾기 · 방송 추가</summary><section aria-labelledby="channels-heading">
+      <div class="section-heading"><h2 id="channels-heading">즐겨찾기 <span id="channel-count" class="count">0</span></h2></div>
+      <form id="channel-form" class="channel-form">
+        <label class="sr-only" for="channel-input">치지직 방송 URL 또는 채널 ID</label>
+        <input id="channel-input" type="text" placeholder="방송 URL 또는 채널 ID" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="2048" required>
+        <div class="form-row">
+          <label class="sr-only" for="channel-name">즐겨찾기 이름, 선택 사항</label>
+          <input id="channel-name" type="text" placeholder="이름 (선택)" autocomplete="off" maxlength="60">
+          <button id="add-button" class="button accent" type="submit">추가</button>
+        </div>
+      </form>
+      <input id="channel-search" class="collection-search" type="search" placeholder="즐겨찾기 검색" aria-label="즐겨찾기 이름 또는 채널 ID 검색" autocomplete="off" maxlength="200">
+      <div id="channels-empty" class="empty-state"><span aria-hidden="true">◇</span><p>자주 보는 방송을 추가하고<br>A / B / C / D에 열어 보세요.</p></div>
+      <p id="channels-no-results" class="empty-copy" role="status" hidden>검색에 맞는 채널이 없어요.</p>
+      <ul id="channels-list" class="channels-list" aria-label="즐겨찾는 방송"></ul>
+    </section></details>
+
+    <section class="section-page" data-section-panel="clips" hidden>
+      <div id="clips-connection-help" class="section-empty">앱을 연결하면 로컬 클립을 확인할 수 있어요. 위의 데스크톱 앱 연결을 펼쳐 주세요.</div>
+      <button id="open-desk-clips" class="button" type="button">앱에서 전체 클립 관리</button>
     <section id="clips-section" aria-labelledby="clips-heading" hidden>
       <div class="section-heading"><h2 id="clips-heading">클립 보관함 <span id="clip-count" class="count">0</span></h2><button id="folder-button" class="button quiet small" type="button" data-action="folder">폴더 열기 <span aria-hidden="true">↗</span></button></div>
       <input id="clip-search" class="collection-search" type="search" placeholder="방송·파일명으로 클립 검색" aria-label="방송 또는 파일명으로 클립 검색" autocomplete="off" maxlength="200">
@@ -91,6 +100,10 @@
       <ul id="clips-list" class="clips-list" aria-label="최근 저장한 클립"></ul>
       <p id="clips-limit" class="subtle" hidden>최근 10개를 표시해요. 전체 파일은 보관 폴더에서 확인하세요.</p>
       <p class="subtle search-scope">저장한 클립 전체에서 검색해요.</p>
+    </section>
+    </section>
+    <section class="section-page" data-section-panel="bot" hidden>
+      <div id="bot-workspace" class="bot-workspace"></div>
     </section>
   </main>
 

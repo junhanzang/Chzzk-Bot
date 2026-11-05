@@ -2,7 +2,7 @@ import { createDom, createEventScope, setText } from '../../browser-extension/sh
 import { createChannelEditor } from '../../browser-extension/shared/ui/channel-editor.mjs';
 import { presentation, slotIds, letters, slotKey, getSlot as findSlot } from '../../browser-extension/shared/ui/model.mjs';
 
-export function createFavoritesView({ document, run, onFocusSlot }) {
+export function createFavoritesView({ document, run, onFocusSlot, onHome = () => {} }) {
   const { $, element } = createDom(document);
   const events = createEventScope();
   let snapshot, lastOrder = '';
@@ -90,6 +90,6 @@ export function createFavoritesView({ document, run, onFocusSlot }) {
     const ok = await run('add', 'addChannel', { input, name: $('#channel-name').value.trim() });
     if (ok) { $('#channel-input').value = ''; $('#channel-name').value = ''; }
   });
-  events.on($('.brand'), 'click', event => { event.preventDefault(); $('#channel-input').focus(); });
+  events.on($('.brand'), 'click', event => { event.preventDefault(); onHome(); $('#channel-input').focus(); });
   return { render, dispose() { events.dispose(); for (const value of rows.values()) value.editor.dispose(); rows.clear(); } };
 }

@@ -15,7 +15,7 @@ export function createPlayerBounds({ document, window, cards, sendBounds, onErro
   const grid = document.querySelector('.players-grid');
   const surfaces = cards.map(card => ({ card, surface: card.querySelector('[data-role="surface"]') }));
   const events = createEventScope();
-  let frame = null, lastBounds = '', slots = [], disposed = false;
+  let frame = null, lastBounds = '', slots = [], disposed = false, visible = true;
   function request() {
     if (disposed || frame !== null) return;
     frame = window.requestAnimationFrame(async () => {
@@ -29,7 +29,7 @@ export function createPlayerBounds({ document, window, cards, sendBounds, onErro
       if (grid.style.getPropertyValue('--stage-height') !== height) grid.style.setProperty('--stage-height', height);
       if (!sendBounds) return;
       const viewport = { width: window.innerWidth, height: window.innerHeight };
-      const bounds = surfaces.map(({ card, surface }, slotId) => clippedSurfaceBounds(surface.getBoundingClientRect(), workspace, viewport, slotId, card.hidden));
+      const bounds = surfaces.map(({ card, surface }, slotId) => clippedSurfaceBounds(surface.getBoundingClientRect(), workspace, viewport, slotId, !visible || card.hidden));
       const key = JSON.stringify({ bounds, slots });
       if (key === lastBounds) return;
       lastBounds = key;
@@ -44,6 +44,7 @@ export function createPlayerBounds({ document, window, cards, sendBounds, onErro
   events.on(document, 'scroll', request, true);
   return {
     request,
+    setVisible(value) { visible = Boolean(value); request(); },
     update(nextSlots) { slots = nextSlots.map(slot => [slot.slotId, slot.channelId, slot.pageStatus]); request(); },
     dispose() {
       disposed = true;

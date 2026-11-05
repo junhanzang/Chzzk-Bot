@@ -64,6 +64,7 @@ class SpeechWorkers:
         if bot._stop_event.is_set() or observation.generation != bot.pipeline.generation:
             return
         bot.metrics.increment("observed")
+        bot.emit_event("heard", speech=observation.text)
         bot.speech_context.observe(observation)
         try:
             bot.speech_queue.put_nowait(observation)
@@ -95,18 +96,22 @@ class SpeechWorkers:
         text = observation.text
         if not bot.pipeline.accepts(observation.observed_at, observation.generation):
             bot.metrics.increment("fresh_expired")
+            bot.emit_event("skipped", reason="expired_or_stopped")
             return None
         if bot._warmup_end_time and time.time() < bot._warmup_end_time:
             bot.metrics.increment("warmup")
+            bot.emit_event("skipped", reason="warmup")
             return None
         chat_rate = bot.chat_reader.get_chat_rate(30) if bot.chat_reader else 0
         cooldown = Config.RESPONSE_COOLDOWN * (3 if chat_rate > 20 else 2 if chat_rate > 10 else 1)
         with bot._cooldown_lock:
             if bot.last_response_time and time.monotonic() - bot.last_response_time < cooldown:
                 bot.metrics.increment("cooldown")
+                bot.emit_event("skipped", reason="cooldown")
                 return None
         if Config.RESPONSE_CHANCE < 1.0 and random.random() > Config.RESPONSE_CHANCE:
             bot.metrics.increment("skipped")
+            bot.emit_event("skipped", reason="response_chance")
             return None
         chat_context = bot.chat_reader.get_chat_context(10, filter_reactions=True,
             max_age_seconds=Config.CHAT_CONTEXT_MAX_AGE_SECONDS) if bot.chat_reader else ""
@@ -132,6 +137,7 @@ class SpeechWorkers:
             speech_context=speech_context,
             timeout_seconds=min(30.0, remaining),
         )
+        bot.emit_event(result.status, speech=text, response=result.response, reason=result.reason)
         if result.status != "generated":
             metric, message = {
                 "skipped": ("skipped", "이 발화에는 반응하지 않기로 했어요."),

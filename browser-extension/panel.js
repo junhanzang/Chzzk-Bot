@@ -5,10 +5,16 @@ import { createFavoritesView } from './ui/favorites.mjs';
 import { createClipsView } from './ui/clips.mjs';
 import { createSlotsView } from './ui/slots.mjs';
 import { createWatchToolsView } from './ui/watch-tools.mjs';
+import { createSectionNavigation } from './shared/ui/navigation.mjs';
+import { createBotView } from './shared/ui/bot-view.mjs';
+import { createPanelNavigationView } from './ui/navigation.mjs';
 
 const notice = createNoticeView({ document });
 const controller = createPanelController({ document, timers: window, sendMessage: message => chrome.runtime.sendMessage(message), onNotice: notice.show });
+const navigation = createSectionNavigation({ document });
 const views = [
+  createBotView({ document, root: document.querySelector('#bot-workspace'), run: controller.execute }),
+  createPanelNavigationView({ document, run: controller.execute }),
   createConnectionView({ document, run: controller.execute, notify: notice.show }),
   createFavoritesView({ document, run: controller.execute }),
   createSlotsView({ document, run: controller.execute }),
@@ -26,6 +32,7 @@ window.addEventListener('pagehide', () => {
   unsubscribe();
   controller.dispose();
   for (const view of views) view.dispose();
+  navigation.dispose();
   notice.dispose();
 }, { once: true });
 controller.start();

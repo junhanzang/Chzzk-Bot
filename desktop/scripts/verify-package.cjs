@@ -6,12 +6,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const asar = require('@electron/asar');
+const { botSourceResources } = require('./bot-resources.cjs');
 
 function allowedAppFile(file) {
   return ['package.json', 'LICENSE', 'desktop/main.cjs', 'desktop/preload.cjs'].includes(file) ||
     /^desktop\/lib\/[a-z0-9-]+\.cjs$/.test(file) ||
     /^desktop\/ui\/[a-z0-9-]+\.(?:mjs|html|css)$/.test(file) ||
-    /^browser-extension\/shared\/(?:channels\.js|presentation\.js|rewards\.js|chat-observer\.js|package\.json|REWARDS-SOURCES\.md|ui\/[a-z0-9-]+\.mjs)$/.test(file);
+    /^browser-extension\/shared\/(?:channels\.js|presentation\.js|bot-state\.js|rewards\.js|chat-observer\.js|package\.json|REWARDS-SOURCES\.md|ui\/[a-z0-9-]+\.(?:mjs|css))$/.test(file);
 }
 
 function checkRelativeReferences(files, readFile) {
@@ -59,6 +60,28 @@ function verifyPackage(appDirectory = path.resolve(__dirname, '..', 'dist', 'win
   assert.equal(metadata.version, require('../package.json').version);
   assert.equal(JSON.parse(readFile('browser-extension/shared/package.json')).type, 'commonjs');
   checkRelativeReferences(files, readFile);
+  const botRoot = path.join(appDirectory, 'resources', 'bot');
+  const botFiles = [];
+  function checkBot(directory, relative = '') {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const name = relative ? `${relative}/${entry.name}` : entry.name;
+      assert(!entry.isSymbolicLink(), `Unexpected bot symlink: ${name}`);
+      if (entry.isDirectory()) { assert(['bot', 'memory', 'examples'].includes(name), `Unexpected bot directory: ${name}`); checkBot(path.join(directory, entry.name), name); }
+      else {
+        const allowed = ['main.py', 'config.py', 'core_logic.py', 'response_pipeline.py', 'audio_buffer.py', 'audio_capture.py',
+          'speech_recognition.py', 'llm_handler.py', 'chat_reader.py', 'chat_sender.py', 'requirements.txt', '.env.example', 'LICENSE',
+          'examples/bot-demo.json', 'examples/bot-quality.json'].includes(name) || /^(?:bot|memory)\/[a-z_]+\.py$/.test(name);
+        assert(entry.isFile() && allowed, `Unexpected bot source: ${name}`); botFiles.push(name);
+      }
+    }
+  }
+  checkBot(botRoot);
+  const expectedBotFiles = botSourceResources();
+  assert.deepEqual(botFiles.sort(), expectedBotFiles.map(entry => entry.to.slice('bot/'.length)).sort(), 'Packaged bot sources differ from the complete allowlist');
+  for (const entry of expectedBotFiles) {
+    const actual = fs.readFileSync(path.join(botRoot, entry.to.slice('bot/'.length)));
+    assert(actual.equals(fs.readFileSync(entry.from)), `Packaged bot source differs: ${entry.to}`);
+  }
   assert.equal(fs.readFileSync(path.join(appDirectory, 'resources', 'LICENSE'), 'utf8'), fs.readFileSync(path.resolve(__dirname, '..', '..', 'LICENSE'), 'utf8'));
   assertWindowsX64(path.join(appDirectory, 'Chzzk Desk.exe'));
   const ffmpeg = path.join(appDirectory, 'resources', 'ffmpeg');

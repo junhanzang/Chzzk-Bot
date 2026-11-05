@@ -29,6 +29,21 @@ class AuthSession extends EventEmitter {
 
   update(value) { this.state = value; this.emit('change', { ...value }); }
 
+  // Private main-process capability. Only an explicit bot send-session start
+  // reads these cookies; neither renderer nor extension ever receives them.
+  async readBotAuth() {
+    if (this.closed) throw new Error('앱 로그인 연결이 종료되었습니다.');
+    let cookies;
+    try { cookies = await this.session.cookies.get({ url: 'https://chzzk.naver.com/' }); }
+    catch { throw new Error('앱에서 네이버 로그인을 확인한 뒤 다시 시작해 주세요.'); }
+    const read = name => cookies.find(cookie => cookie.name === name)?.value;
+    const nidAut = read('NID_AUT'), nidSes = read('NID_SES');
+    if (![nidAut, nidSes].every(value => typeof value === 'string' && value.length > 0 && value.length <= 8192 && !/[^\x21-\x7e]|;/.test(value))) {
+      throw new Error('봇 전송 전에 앱에서 네이버 로그인해 주세요. 미리보기는 로그인 없이 사용할 수 있어요.');
+    }
+    return { nidAut, nidSes };
+  }
+
   refresh() {
     if (this.closed) return Promise.resolve({ ...this.state });
     if (this.request) return this.request.promise;

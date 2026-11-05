@@ -4,12 +4,17 @@ Factories are injectable so lifecycle checks never need an audio device, GPU,
 browser, real account or network connection.
 """
 from pathlib import Path
+import os
 
 from config import Config
 
 
 class SessionSetupError(RuntimeError):
     """A fixed, user-facing setup message safe to display without credentials."""
+
+    def __init__(self, message, reason="session_setup_failed"):
+        super().__init__(message)
+        self.reason = reason
 
 
 class BotServices:
@@ -18,7 +23,10 @@ class BotServices:
     def create_memories(self, channel_id, *, use_mock=False):
         from memory.memory_store import MemoryStore
         from memory.memory_manager import MemoryManager
-        data_root = Path(__file__).resolve().parents[1] / "data"
+        # Packaged GUI sources are read-only; its trusted launcher supplies an
+        # application-owned writable data directory, never a renderer path.
+        base = os.environ.get("CHZZK_BOT_DATA_DIR")
+        data_root = Path(base) / "data" if base else Path(__file__).resolve().parents[1] / "data"
         data_dir = (data_root / "mock" if use_mock else data_root) / channel_id
         stores = tuple(MemoryStore(str(data_dir / name), max_facts=count)
                        for name, count in (("streamer_memory.json", 5),
@@ -65,7 +73,7 @@ class BotSession:
     def initialize(self):
         from bot.settings import normalize_channel_id
         bot = self.bot
-        if bot.non_interactive and not (bot.auto_send or bot.use_mock):
+        if bot.non_interactive and not (bot.auto_send or bot.use_mock or getattr(bot, "approval_provider", None)):
             raise SessionSetupError("입력 없이 실행하려면 --auto 또는 --mock을 함께 사용하세요.")
         channel = bot.channel_id or Config.CHZZK_CHANNEL_ID
         if not channel and not bot.non_interactive:
@@ -110,9 +118,9 @@ class BotSession:
                 return True
             if bot._stop_event.is_set():
                 return False
-            print("Ollama 연결 확인 중...")
+            print("AI 연결 확인 중...")
             if not bot.llm_handler.check_connection():
-                raise SessionSetupError("Ollama에 연결할 수 없습니다. --doctor로 모델과 서버를 확인하세요.")
+                raise SessionSetupError("AI에 연결할 수 없습니다. --doctor로 모델과 서버 설정을 확인하세요.", "model_unavailable")
             if bot.speech_recognizer is None:
                 bot.speech_recognizer = self.services.create_recognizer()
             print("음성 인식 모델 준비 중...")

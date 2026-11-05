@@ -10,15 +10,16 @@ def build_parser():
         epilog="처음 실행: --setup → --doctor → --mock. --demo는 모델·음성·로그인 없이 실행합니다.")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--menu", action="store_true", help="설정·진단·실행 메뉴")
+    actions.add_argument("--control", action="store_true", help="앱 연결용 JSON 제어 모드 (표준입력/출력)")
     actions.add_argument("--setup", action="store_true", help="채널·모델·응답 간격을 .env에 저장")
-    actions.add_argument("--doctor", action="store_true", help="설정·패키지·Ollama 준비 상태 진단")
+    actions.add_argument("--doctor", action="store_true", help="설정·패키지·AI 준비 상태 진단")
     actions.add_argument("--demo", action="store_true", help="모델 없이 기본 방송 상황 예제로 검사")
     actions.add_argument("--replay", metavar="JSON", help="저장한 방송 상황을 채팅 전송 없이 재현")
     actions.add_argument("--evaluate", nargs="?", const="", metavar="JSON", help="실제 모델로 독립 상황 품질 평가 (생략 시 기본 20개, 전송 없음)")
     actions.add_argument("--list-speakers", action="store_true", help="사용 가능한 출력 장치의 ID 표시")
-    parser.add_argument("--generate", action="store_true", help="--demo/--replay에서 Ollama로 답변 생성 (채팅 전송 없음)")
+    parser.add_argument("--generate", action="store_true", help="--demo/--replay에서 AI로 답변 생성 (채팅 전송 없음)")
     parser.add_argument("--report", metavar="JSON", help="--demo/--replay/--evaluate 결과를 JSON 파일로 저장")
-    parser.add_argument("--model", metavar="NAME", help="--evaluate에서 이번 평가에만 사용할 Ollama 모델")
+    parser.add_argument("--model", metavar="NAME", help="--evaluate에서 이번 평가에만 사용할 AI 모델")
     parser.add_argument("--channel", metavar="URL_OR_ID", help="이번 실행의 치지직 방송 URL 또는 채널 ID")
     parser.add_argument("--mode", choices=("ai", "hybrid", "mimic"), help="이번 실행의 응답 모드")
     parser.add_argument("--speaker", metavar="ID", help="출력 장치 ID (--list-speakers로 확인)")
@@ -44,6 +45,9 @@ def main(argv=None):
     if args.menu:
         from bot.launcher import main as menu
         return menu()
+    if args.control:
+        from bot.control import run_control
+        return run_control()
     if args.setup:
         from bot.setup import run_setup
         return run_setup()
@@ -69,7 +73,8 @@ def main(argv=None):
     from config import Config
     Config.load(overrides={"CHZZK_CHANNEL_ID": args.channel, "RESPONSE_MODE": args.mode,
                            "AUDIO_SPEAKER_ID": args.speaker,
-                           "OLLAMA_MODEL": args.model if evaluating else None})
+                           "OLLAMA_MODEL": args.model if evaluating else None,
+                           "LLM_MODEL": args.model if evaluating else None})
     if args.doctor:
         from bot.diagnostics import run_doctor
         return run_doctor(Config)

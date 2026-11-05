@@ -20,12 +20,14 @@ class ChzzkVoiceBot:
 
     def __init__(self, use_mock=False, auto_send=False, *, channel_id=None,
                  speaker_id=None, non_interactive=False, mode=None, metrics=None,
-                 services=None):
+                 services=None, event_sink=None, approval_provider=None):
         self.channel_id = channel_id
         self.speaker_id = speaker_id or getattr(Config, "AUDIO_SPEAKER_ID", "")
         self.non_interactive = non_interactive
         self.use_mock = use_mock
         self.auto_send = auto_send or (non_interactive and use_mock)
+        self.event_sink = event_sink
+        self.approval_provider = approval_provider
         self.audio_capture = self.speech_recognizer = self.llm_handler = None
         self.chat_sender = self.chat_reader = None
         self.streamer_memory = self.chat_memory = self.my_chat_memory = None
@@ -82,6 +84,8 @@ class ChzzkVoiceBot:
             if not self.initialize():
                 print("초기화 실패.")
                 return False
+            if self._stop_event.is_set():
+                return True
             print(f"\n봇 시작 · {MODE_LABELS[self.response_mode]} 모드 · Ctrl+C로 종료")
             if self.auto_send and not self.non_interactive and os.name == "nt":
                 print("m키로 모드 전환 · h키로 연결 상태와 처리 현황 확인")
@@ -91,6 +95,7 @@ class ChzzkVoiceBot:
             if Config.WARMUP_SECONDS:
                 print(f"[워밍업] {Config.WARMUP_SECONDS}초 동안 관찰합니다.")
             self._started = True
+            self.emit_event("status", reason="running")
             if self.audio_capture is not None:
                 self.audio_capture.start()
             for attr, target, name in (
@@ -110,6 +115,8 @@ class ChzzkVoiceBot:
             self.metrics.increment("session_error")
             detail = str(error) if isinstance(error, SessionSetupError) else f"{type(error).__name__}: --doctor로 실행 환경을 확인하세요."
             print(f"[실행 실패] {detail}")
+            self.emit_event("error", reason=error.reason if isinstance(error, SessionSetupError)
+                            else "dependencies_missing" if isinstance(error, ImportError) else "session_failed")
             return False
         finally:
             self.stop()
@@ -144,9 +151,11 @@ class ChzzkVoiceBot:
     def _can_send(self, candidate):
         if self._stop_event.is_set() or not self.pipeline.is_current(candidate):
             self.metrics.increment("fresh_expired")
+            self.emit_event("skipped", reason="expired_or_stopped")
             return False
         if not self.pipeline.can_send(candidate):
             self.metrics.increment("cooldown")
+            self.emit_event("skipped", reason="cooldown")
             return False
         return True
 
@@ -156,35 +165,49 @@ class ChzzkVoiceBot:
             print("[응답] 만료 또는 전송 간격으로 건너뛰었어요.")
             return False
         response = candidate.text
+        self.emit_event("proposed", speech=candidate.speech, response=response)
         if not self.auto_send:
-            if self.non_interactive:
+            if self.approval_provider is not None:
+                decision = self.approval_provider(candidate)
+                action = decision.get("action") if isinstance(decision, dict) else "skip"
+                if action not in ("send", "edit"):
+                    self.metrics.increment("skipped")
+                    self.emit_event("skipped", reason="approval_skipped")
+                    return False
+                if action == "edit":
+                    response = decision.get("text", "")
+            elif self.non_interactive:
                 self.metrics.increment("skipped")
                 return False
-            choice = input(f"[{MODE_LABELS[self.response_mode]}] [{response}] Enter=전송 / s=스킵 / e=수정 / m=모드전환: ").strip().lower()
-            action = approval_action(choice)
-            if action == "mode":
-                self._cycle_mode()
-                self.metrics.increment("skipped")
-                return False
-            if action == "skip":
-                self.metrics.increment("skipped")
-                return False
-            if action == "edit":
-                response = input("수정 메시지: ").strip()
+            else:
+                choice = input(f"[{MODE_LABELS[self.response_mode]}] [{response}] Enter=전송 / s=스킵 / e=수정 / m=모드전환: ").strip().lower()
+                action = approval_action(choice)
+                if action == "mode":
+                    self._cycle_mode()
+                    self.metrics.increment("skipped")
+                    return False
+                if action == "skip":
+                    self.metrics.increment("skipped")
+                    return False
+                if action == "edit":
+                    response = input("수정 메시지: ").strip()
         response = self.llm_handler.validate_response(response)
         if not response:
             self.metrics.increment("invalid_response")
+            self.emit_event("filtered", reason="response_guard")
             return False
         if not self._can_send(candidate):
             return False
         if not self.chat_sender.send_message(response, is_current=lambda:
                 not self._stop_event.is_set() and self.pipeline.can_send(candidate)):
             self.metrics.increment("send_failed")
+            self.emit_event("error", reason="send_failed")
             return False
         self.pipeline.record_sent(candidate)
         self.llm_handler.record_sent_response(candidate.speech if candidate.kind == "ai" else "", response)
         self.stats["sent_messages"] += 1
         self.metrics.increment("sent")
+        self.emit_event("preview" if self.use_mock else "sent", speech=candidate.speech, response=response)
         with self._cooldown_lock:
             self.last_response_time = time.monotonic()
         if candidate.kind == "mimic":
@@ -239,14 +262,26 @@ class ChzzkVoiceBot:
         state = self.status_snapshot()
         print(f"[상태] 수신 {labels.get(state['reader'], '확인 중')} · 전송 {labels.get(state['sender'], '확인 중')} · {self.metrics.summary()}")
 
+    def emit_event(self, event_type, **fields):
+        """Optional GUI observation hook; failures must not affect sending policy."""
+        if self.event_sink is not None:
+            try:
+                self.event_sink({"type": event_type, **fields})
+            except Exception:
+                pass
+
+    def request_stop(self):
+        """Invalidate work immediately; cleanup may finish on the worker thread."""
+        self._stop_event.set()
+        self.pipeline.close()
+
     def stop(self):
         """Idempotent best-effort cleanup: one broken adapter cannot leak others."""
         with self._stop_lock:
             if self._stopped:
                 return
             self._stopped = True
-        self._stop_event.set()
-        self.pipeline.close()
+        self.request_stop()
 
         def cleanup(label, action):
             try:

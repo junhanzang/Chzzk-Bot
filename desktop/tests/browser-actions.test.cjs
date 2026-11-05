@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createBrowserHandlers } = require('../lib/browser-actions.cjs');
 const { normalizeSettings } = require('../lib/channels.cjs');
+const { RPC_METHODS } = require('../lib/browser-bridge.cjs');
 const channelId = '0123456789abcdef0123456789abcdef';
 
 function fixture() {
@@ -32,6 +33,16 @@ test('browser actions force browser playback and never expose pairing or account
   assert.ok(!JSON.stringify(added).includes('private'));
   assert.equal(handlers.login, undefined);
   assert.equal(handlers.setPlayerBounds, undefined);
+});
+
+test('RPC allowlist exposes all public controls but never AI credentials or privileged app commands', async () => {
+  const { actions } = fixture();
+  const privateState = { status: 'idle', config: { provider: 'openai_compatible', model: 'test', apiKey: 'SECRET', apiKeySet: true }, apiKey: 'SECRET', events: [] };
+  actions.getBotState = async () => privateState;
+  const handlers = createBrowserHandlers({ actions });
+  assert.deepEqual([...RPC_METHODS].sort(), Object.keys(handlers).sort());
+  for (const method of ['configureBot', 'login', 'openExternal', 'setPlayerBounds']) assert(!RPC_METHODS.includes(method));
+  const bot = await handlers.getBotState(); assert.equal(bot.config.apiKeySet, true); assert(!JSON.stringify(bot).includes('SECRET'));
 });
 
 test('recording from Chrome cannot take over an app player or save a stale channel', async () => {

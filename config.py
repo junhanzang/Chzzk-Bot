@@ -47,8 +47,9 @@ class Config:
     def display(cls):
         print("=" * 50)
         print("현재 설정:")
-        print(f"Ollama 모델: {cls.OLLAMA_MODEL}")
-        print(f"Ollama 호스트: {cls.OLLAMA_HOST}")
+        print(f"AI 제공자: {cls.LLM_PROVIDER}")
+        print(f"AI 모델: {cls.LLM_MODEL if cls.LLM_PROVIDER == 'openai_compatible' else cls.OLLAMA_MODEL}")
+        print(f"API 키: {'설정됨' if cls.LLM_API_KEY else '미설정'}")
         print(f"ASR 모델: {cls.ASR_MODEL}")
         print(f"오디오: {cls.AUDIO_SAMPLE_RATE}Hz / {cls.AUDIO_CHUNK_DURATION}초")
         print(f"스피커: {cls.AUDIO_SPEAKER_ID or '시스템 기본 장치'}")

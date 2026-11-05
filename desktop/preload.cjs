@@ -4,7 +4,7 @@ const methods = ['getState', 'addChannel', 'removeChannel', 'assignSlot', 'clear
   'setBuffer', 'saveClip', 'reloadSlot', 'login', 'refreshAuth', 'openExternal', 'openClip', 'showClipsFolder', 'setPlayerBounds',
   'copyBrowserConnectionCode', 'resetBrowserConnection', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings',
   'renameChannel', 'setChannelPinned', 'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers',
-  'queryClips', 'updateClip', 'showClipInFolder'];
+  'queryClips', 'updateClip', 'showClipInFolder', 'getBotState', 'configureBot', 'previewBot', 'startBot', 'stopBot', 'approveBot', 'openDeskSection'];
 const bridge = {};
 for (const method of methods) {
   bridge[method] = async arg => {
@@ -22,5 +22,10 @@ bridge.onNotice = callback => {
   const listener = (_event, notice) => callback(notice);
   ipcRenderer.on('desk:notice', listener);
   return () => ipcRenderer.removeListener('desk:notice', listener);
+};
+bridge.onNavigate = callback => {
+  const listener = (_event, section) => { if (['clips', 'bot', 'settings'].includes(section)) callback(section); };
+  ipcRenderer.on('desk:navigate', listener);
+  return () => ipcRenderer.removeListener('desk:navigate', listener);
 };
 contextBridge.exposeInMainWorld('desk', bridge);

@@ -7,6 +7,7 @@
 | 모듈 | 책임 |
 |---|---|
 | `bot/cli.py`, `bot/launcher.py` | 명령 해석, 시작 메뉴, 실행 경로 선택 |
+| `bot/control.py` | JSON-lines 제어, 비공개 메모리 설정·인증, UI 이벤트와 승인 대기 |
 | `bot/settings.py`, `config.py` | 의존성 없는 설정 파싱·검증, 설정 우선순위 |
 | `bot/setup.py`, `bot/diagnostics.py` | 기존 값을 보존하는 설정 저장, 실행 전 진단 |
 | `bot/runtime.py` | 세션 생명주기, 승인, 최종 전송 경계 |
@@ -15,15 +16,20 @@
 | `bot/reactions.py` | 채팅 반응과 후원 TTS 필터 정책 |
 | `bot/connection.py`, `bot/auth.py` | 연결 종료·재연결 지원, 인증·쿠키 저장 |
 | `bot/prompts.py`, `bot/generation.py` | 참여·말투 지침, 생성·생략·필터·오류 결과 계약 |
+| `bot/model_transport.py` | Ollama / 호환 Chat Completions HTTP 요청과 응답 정규화 |
 | `bot/replay.py`, `bot/evaluation.py` | 순차 시나리오 재현, 독립 상황별 실제 모델 평가 |
 | `bot/reports.py`, `bot/telemetry.py` | 원자적 JSON 보고서 저장, 원문 없는 세션 카운터 |
 | `response_pipeline.py`, `audio_buffer.py` | 시간·세대·상한이 있는 대기열 정책 |
 | `core_logic.py` | 입출력 없는 프롬프트·응답 가드·재연결 정책 |
 | `chat_reader.py`, `chat_sender.py` | 치지직 수신·전송 어댑터 |
-| `audio_capture.py`, `speech_recognition.py`, `llm_handler.py` | 오디오·ASR·Ollama 어댑터 |
+| `audio_capture.py`, `speech_recognition.py`, `llm_handler.py` | 오디오·ASR·모델 문맥과 응답 가드 |
 | `memory/` | 채널별 기억, 일관된 요약 작업과 원자적 저장 |
 
 런타임은 워커·반응 정책·세션을 조합합니다. 장치 팩토리를 주입할 수 있어서 실제 브라우저·계정·GPU 없이 시작 실패와 자원 정리를 검증합니다. 기존 내부 메서드 일부는 호환 위임으로 유지하며 새 동작은 해당 책임 모듈에 추가합니다.
+
+데스크톱은 고정된 `main.py --control` 자식 프로세스와 표준 입출력으로만 통신합니다. Python 제어를 위해 네트워크 수신 서버를 열지 않습니다. `getState`는 선택 패키지 없이 동작하며, 명시적인 `preview` 또는 `start`에서만 모델/장치를 사용합니다. `authenticate`는 앱이 전달한 쿠키를 프로세스 메모리에만 적용합니다. 명령 응답과 이벤트는 제한된 JSON 스키마를 사용하고 어댑터의 원문 로그를 stdout/stderr로 전달하지 않습니다.
+
+GUI 승인은 기존 `_handle_candidate` 전송 경계를 재사용합니다. ID·원래 캡처 시간·모드·중지 여부를 확인하며, 생성한 초안은 승인 전에 전송 이력에 넣지 않습니다. CLI 입력은 기존 경로를 유지하고 GUI에서는 콜백을 주입합니다.
 
 ## 생성과 평가 흐름
 

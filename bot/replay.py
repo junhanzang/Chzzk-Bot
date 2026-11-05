@@ -167,7 +167,7 @@ def replay_events(events, *, handler_factory=None, max_age_seconds=20, cooldown_
     pipeline.close()
     counts = {status: sum(row["status"] == status for row in rows) for status in sorted(STATUSES)}
     generation_errors = sum(row.get("generation_status") == "error" for row in rows)
-    return {"version": 1, "source": "ollama" if handler is not None else "prepared_drafts",
+    return {"version": 1, "source": getattr(handler, "provider", "ollama") if handler is not None else "prepared_drafts",
             "actual_messages_sent": 0, "counts": counts, "events": rows,
             "generation_errors": generation_errors,
             "expectations_passed": not generation_errors and all(row.get("matches_expected", True) for row in rows),
@@ -198,7 +198,7 @@ def run_replay(path=None, *, generate=False, report_path=None):
                        "context_age_seconds": Config.SPEECH_CONTEXT_MAX_AGE_SECONDS}
         report = replay_events(events, handler_factory=factory, **options)
         print("\n문장 리플레이 - 실제 채팅 전송 없음")
-        print("Ollama로 답변을 생성합니다." if generate else "준비된 예시 답변으로 동작을 확인합니다 (AI 품질 평가 아님).")
+        print("설정한 AI로 답변을 생성합니다." if generate else "준비된 예시 답변으로 동작을 확인합니다 (AI 품질 평가 아님).")
         labels = {"accepted": "전송 가능", "expired": "만료", "cooldown": "간격 대기", "skipped": "생략", "filtered": "응답 필터", "error": "모델 오류"}
         for row in report["events"]:
             print(f"  {row['index']:02d}. [{labels[row['status']]}] {row['speech']}")

@@ -111,6 +111,7 @@ async function boot(savedSettings, { packaged = false } = {}) {
     './lib/auto-clip-service.cjs': { AutoClipService: class extends AutoClipService { constructor(options) { super({ ...options, intervalMs: 0 }); } } },
     './lib/watch-workspace.cjs': require('../lib/watch-workspace.cjs'),
     './lib/chat-host.cjs': { ChatHost: class { attach() {} detach() {} close() {} } },
+    './lib/bot-service.cjs': { BotService: class extends EventEmitter { snapshot() { return { status: 'unavailable', events: [], config: {} }; } async close() {} } },
     'ffmpeg-static': path.join(profile, 'fake-ffmpeg.exe')
   };
   const libraryModule = { exports: {} };

@@ -1,6 +1,7 @@
 'use strict';
 
 const { verifyPackage } = require('./scripts/verify-package.cjs');
+const { botSourceResources } = require('./scripts/bot-resources.cjs');
 
 module.exports = {
   appId: 'io.chzzkdesk.desktop',
@@ -16,10 +17,11 @@ module.exports = {
     'package.json', '!**/node_modules/**',
     { from: '.', to: 'desktop', filter: ['main.cjs', 'preload.cjs', 'lib/**/*.cjs', 'ui/*.mjs', 'ui/*.html', 'ui/*.css'] },
     { from: '../browser-extension/shared', to: 'browser-extension/shared',
-      filter: ['channels.js', 'presentation.js', 'rewards.js', 'chat-observer.js', 'package.json', 'REWARDS-SOURCES.md', 'ui/*.mjs'] }
+      filter: ['channels.js', 'presentation.js', 'bot-state.js', 'rewards.js', 'chat-observer.js', 'package.json', 'REWARDS-SOURCES.md', 'ui/*.mjs', 'ui/*.css'] }
   ],
   // spawn() requires a real executable path, not a path within app.asar.
   extraResources: [
+    ...botSourceResources(),
     { from: 'node_modules/ffmpeg-static', to: 'ffmpeg', filter: ['ffmpeg.exe', 'ffmpeg.exe.LICENSE', 'ffmpeg.exe.README'] },
     { from: '../LICENSE', to: 'LICENSE' }
   ],

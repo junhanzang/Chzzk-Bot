@@ -1,9 +1,11 @@
 'use strict';
 
 const { validSlot } = require('./channels.cjs');
+const { sanitizeBotState } = require('../../browser-extension/shared/bot-state.js');
 
 function publicState(value) {
   return { version: value.version, channels: value.channels, slots: value.slots, clips: value.clips,
+    bot: sanitizeBotState(value.bot),
     layout: value.layout, mainSlot: value.mainSlot, clipSeconds: value.clipSeconds,
     autoClipSettings: value.autoClipSettings || {}, autoClips: value.autoClips || [],
     watchPresets: value.watchPresets || [], clipRevision: value.clipRevision, clipTotal: value.clipTotal,
@@ -22,6 +24,12 @@ function createBrowserHandlers({ actions, isQuitting = () => false }) {
   }
   const methods = {
     getState: () => publicState(actions.getState()),
+    getBotState: async () => sanitizeBotState(await actions.getBotState()),
+    previewBot: async arg => sanitizeBotState(await actions.previewBot(arg)),
+    startBot: async arg => sanitizeBotState(await actions.startBot(arg)),
+    stopBot: async () => sanitizeBotState(await actions.stopBot()),
+    approveBot: async arg => sanitizeBotState(await actions.approveBot(arg)),
+    openDeskSection: section => actions.openDeskSection(section),
     addChannel: arg => actions.addChannel({ input: arg?.input, name: arg?.name, playbackMode: 'browser' }),
     removeChannel: id => actions.removeChannel(id),
     assignSlot: arg => actions.assignSlot({ slotId: arg?.slotId, channelId: arg?.channelId, playbackMode: 'browser' }),

@@ -83,6 +83,29 @@ test('panel controller rejects stale refreshes that race with a serialized comma
   controller.dispose();
 });
 
+test('panel stop bypasses an in-flight bot request and ignores its stale completion', async () => {
+  const { createPanelController } = await import('../ui/controller.mjs');
+  const generation = deferred(), methods = [], notices = [];
+  const controller = createPanelController({ document: new Visibility(), onNotice: value => notices.push(value),
+    sendMessage: async message => {
+      methods.push(message.method);
+      if (message.method === 'previewBot') return generation.promise;
+      return { ok: true, value: state('stopped') };
+    } });
+  const snapshots = []; controller.subscribe(value => snapshots.push(value.state.channels[0]?.id));
+  const preview = controller.execute('previewBot', { speech: 'test' }, 'obsolete success');
+  assert.equal(await controller.execute('stopBot'), true);
+  assert.equal(controller.snapshot().pending, true, 'The outstanding request still owns its pending slot');
+  assert.equal(await controller.execute('assignSlot', {}), false);
+  generation.resolve({ ok: true, value: state('obsolete-running') });
+  assert.equal(await preview, true);
+  assert.equal(snapshots.includes('obsolete-running'), false);
+  assert.equal(controller.snapshot().pending, false);
+  assert.equal(notices.includes('obsolete success'), false);
+  assert.equal(methods.filter(name => name === 'stopBot').length, 1);
+  controller.dispose();
+});
+
 test('panel controller owns visibility timers, deduplicates notices, and ignores late refreshes', async () => {
   const { createPanelController } = await import('../ui/controller.mjs');
   const document = new Visibility(), intervals = new Map(), late = deferred();

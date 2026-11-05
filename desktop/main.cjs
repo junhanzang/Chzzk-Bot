@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, WebContentsView, ipcMain, session, shell, clipboard } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, shell, clipboard, safeStorage } = require('electron');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
@@ -17,6 +17,7 @@ const { AuthSession } = require('./lib/auth-session.cjs');
 const { PlayerManager } = require('./lib/player-manager.cjs');
 const { RecordingService } = require('./lib/recording-service.cjs');
 const { DeskController, loadDeskProfile } = require('./lib/desk-controller.cjs');
+const { BotService } = require('./lib/bot-service.cjs');
 
 app.setName('Chzzk Desk');
 const profileDir = resolveProfilePath({
@@ -90,13 +91,21 @@ app.whenReady().then(async () => {
   players.on('login-requested', () => authSession.open());
   players.on('external-requested', url => { shell.openExternal(url).catch(() => {}); });
   authSession.on('signed-in', () => players.reloadAll());
+  const bot = new BotService({ sourceRoot: app.isPackaged ? path.join(process.resourcesPath, 'bot') : path.resolve(__dirname, '..'),
+    dataDir, safeStorage, readAuth: () => authSession.readBotAuth() });
   controller = new DeskController({ profile, store, players, recordings, auth: authSession, version: app.getVersion(),
+    bot,
     browserAvailable: () => Boolean(browserBridge?.connectionCode),
     openExternal: url => shell.openExternal(url), openPath: target => shell.openPath(target), revealPath: target => shell.showItemInFolder(target) });
   controller.on('change', publish);
   controller.on('notice', notify);
   const actions = {
     ...controller.commands(),
+    openDeskSection(section) {
+      if (!['clips', 'bot', 'settings'].includes(section)) throw new Error('지원하지 않는 앱 화면입니다.');
+      if (win.isMinimized()) win.restore(); win.show(); win.focus();
+      win.webContents.send('desk:navigate', section);
+    },
     copyBrowserConnectionCode() {
       if (!browserBridge?.connectionCode) throw new Error('크롬 연결을 준비하지 못했습니다. 앱을 다시 열어 주세요.');
       clipboard.writeText(browserBridge.connectionCode);

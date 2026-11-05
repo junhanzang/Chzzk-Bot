@@ -81,7 +81,7 @@ test('actual extension ZIP contains every runtime module and no development file
       for (const entry of fs.readdirSync(path.join(extensionRoot, current), { withFileTypes: true })) {
         const relative = `${current}/${entry.name}`;
         if (entry.isDirectory()) walk(relative);
-        else if (/\.m?js$/.test(entry.name)) expected.push(relative);
+        else if (/\.(?:m?js|css)$/.test(entry.name)) expected.push(relative);
       }
     };
     walk(directory);

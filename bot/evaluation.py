@@ -99,7 +99,7 @@ def _refresh_summary(report):
 
 def _new_report(suite, metadata):
     report = {"version": 1, "type": "quality_evaluation", "title": suite["title"],
-              "source": "ollama", "actual_messages_sent": 0,
+              "source": metadata.get("provider", "ollama") if metadata else "ollama", "actual_messages_sent": 0,
               "started_at": datetime.now(timezone.utc).isoformat(),
               "metadata": dict(metadata or {}), "total_cases": len(suite["cases"]),
               "evaluation_status": "running", "completed": False, "interrupted": False,
@@ -187,6 +187,11 @@ def collect_model_metadata(handler, *, fetch_json=None):
                 "seed": 0, "think": False, "keep_alive": Config.OLLAMA_KEEP_ALIVE,
                 "generation_options": dict(handler.generation_options),
                 "metadata_warnings": []}
+    metadata["provider"] = getattr(handler, "provider", "ollama")
+    if metadata["provider"] == "openai_compatible":
+        metadata.update(seed=None, think=None, keep_alive=None)
+        metadata["metadata_warnings"].append("provider_version_and_model_digest_unavailable")
+        return metadata
     for endpoint in ("version", "tags"):
         try:
             payload = fetch_json(handler.host.rstrip("/") + "/api/" + endpoint)
@@ -222,7 +227,8 @@ def run_evaluation(path=None, *, report_path=None, model_name=None):
         suite = load_suite(source)
         from config import Config
         Config.validate(require_channel=False)
-        initial_metadata = {"model": model_name or Config.OLLAMA_MODEL,
+        initial_metadata = {"provider": Config.LLM_PROVIDER,
+                            "model": model_name or (Config.LLM_MODEL if Config.LLM_PROVIDER == "openai_compatible" else Config.OLLAMA_MODEL),
                             "suite_sha256": _sha(json.dumps(suite, ensure_ascii=False, sort_keys=True))}
         initial_report = _new_report(suite, initial_metadata)
         # Check the report destination before doing potentially costly inference.
@@ -243,7 +249,7 @@ def run_evaluation(path=None, *, report_path=None, model_name=None):
             initial_report.update(evaluation_status="unavailable", reason="model_unavailable",
                                   finished_at=datetime.now(timezone.utc).isoformat())
             write_report(destination, initial_report)
-            print("평가 미측정: 설정한 Ollama 서버 또는 모델을 사용할 수 없습니다 (평가 0개).")
+            print("평가 미측정: 설정한 AI 서버 또는 모델을 사용할 수 없습니다 (평가 0개).")
             print("모델을 준비한 뒤 다시 실행하세요. 모델 자동 설치·다운로드·채팅 전송은 하지 않았습니다.")
             print(f"보고서: {destination.resolve()}")
             return 2

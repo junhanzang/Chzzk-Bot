@@ -7,15 +7,17 @@ import re
 from collections import deque
 from bot.generation import GenerationResult
 from bot.prompts import build_system_prompt
+from bot.model_transport import OllamaClient, OpenAICompatibleClient, ModelTransportError
 from config import Config
 from core_logic import build_llm_messages, clean_chat_message, guard_chat_message, postprocess_llm_response
 
 
 class LLMHandler:
-    """Ollama 기반 LLM 처리 클래스"""
+    """Shared context and response policy over interchangeable model transports."""
 
     def __init__(self, model_name=None, host=None, context_size=5, chat_log_path=None,
-                 banned_words=None, *, clock=time.monotonic, dedup_seconds=60, seed=None):
+                 banned_words=None, *, clock=time.monotonic, dedup_seconds=60, seed=None,
+                 provider=None, base_url=None, api_key=None):
         """
         Args:
             model_name: Ollama 모델 이름
@@ -26,9 +28,20 @@ class LLMHandler:
             clock: 전송 시점·반복 검사에 사용할 단조 증가 시계
             dedup_seconds: 같은 반응을 차단할 시간 (기본 60초)
         """
-        self.model_name = model_name or Config.OLLAMA_MODEL
-        self.host = host or Config.OLLAMA_HOST
-        self.api_url = f"{self.host}/api/chat"
+        self.provider = provider or Config.LLM_PROVIDER
+        if self.provider not in ("ollama", "openai_compatible"):
+            raise ValueError("AI 제공자 설정을 확인하세요.")
+        if self.provider == "openai_compatible":
+            self.model_name = model_name or Config.LLM_MODEL
+            if not isinstance(self.model_name, str) or not self.model_name.strip():
+                raise ValueError("외부 AI 모델을 설정하세요.")
+            self.transport = OpenAICompatibleClient(base_url=base_url or host or Config.LLM_BASE_URL,
+                model=self.model_name, api_key=Config.LLM_API_KEY if api_key is None else api_key)
+        else:
+            self.model_name = model_name or Config.OLLAMA_MODEL
+            self.transport = OllamaClient(host=host or Config.OLLAMA_HOST, model=self.model_name,
+                                          keep_alive=Config.OLLAMA_KEEP_ALIVE)
+        self.host, self.api_url = self.transport.host, self.transport.api_url
         self.context = deque(maxlen=context_size)
         self._context_lock = threading.Lock()
         self.banned_words = tuple(banned_words) if banned_words is not None else Config.BANNED_WORDS
@@ -65,6 +78,9 @@ class LLMHandler:
     @property
     def generation_options(self):
         """Copy of the actual request options, also used in evaluation metadata."""
+        if self.provider == "openai_compatible":
+            # Avoid model-specific temperature, reasoning, and seed options.
+            return {"max_completion_tokens": Config.LLM_MAX_TOKENS}
         options = {"temperature": 0.9, "top_p": 0.9, "repeat_penalty": 1.3,
                    "num_predict": Config.LLM_MAX_TOKENS, "num_ctx": Config.LLM_NUM_CTX}
         if self.seed is not None:
@@ -73,6 +89,11 @@ class LLMHandler:
 
     def check_connection(self):
         """Ollama 서버 연결 확인"""
+        if self.provider == "openai_compatible":
+            # Compatible services need not implement model-list APIs. Do not
+            # spend tokens or transmit context for a passive readiness check.
+            print("외부 AI 설정 확인: 실제 연결은 첫 응답 요청에서 확인합니다.")
+            return True
         from bot.diagnostics import model_is_available
         try:
             response = requests.get(f"{self.host}/api/tags", timeout=5)
@@ -155,34 +176,20 @@ class LLMHandler:
                 speech_context=speech_context,
             )
 
-            payload = {
-                "model": self.model_name,
-                "messages": messages,
-                "stream": False,
-                "think": False,
-                "keep_alive": Config.OLLAMA_KEEP_ALIVE,
-                "options": self.generation_options
-            }
-
-            response = requests.post(
-                self.api_url,
-                json=payload,
-                timeout=min(float(timeout_seconds), 30.0)
-            )
-
-            if response.status_code != 200:
-                return outcome("error", f"http_{response.status_code}")
-            result = response.json()
+            result = self.transport.generate(messages, self.generation_options,
+                                             timeout=min(float(timeout_seconds), 30.0))
             if not isinstance(result, dict) or not isinstance(result.get("message"), dict):
                 return outcome("error", "invalid_payload")
+            if result.get("done_reason") == "content_filter":
+                return outcome("filtered", "provider_filter")
             content = result["message"].get("content")
             if not isinstance(content, str):
                 return outcome("error", "invalid_payload")
             raw_text = content.strip()
-            if not raw_text:
-                return outcome("error", "empty_response")
             if result.get("done_reason") == "length":
                 return outcome("filtered", "token_limit")
+            if not raw_text:
+                return outcome("error", "empty_response")
             # Classify only an explicit final skip marker as intentional silence.
             # Mixed explanations containing SKIP still fail closed, but are not
             # credited as a correct model decision by the quality evaluator.
@@ -197,6 +204,8 @@ class LLMHandler:
             if not generated_text:
                 return outcome("filtered", "response_guard")
             return outcome("generated", "reply", generated_text)
+        except ModelTransportError as error:
+            return outcome("error", str(error))
         except requests.exceptions.Timeout:
             return outcome("error", "timeout")
         except requests.exceptions.JSONDecodeError:
@@ -259,22 +268,11 @@ class LLMHandler:
         messages[-1]["content"] += "\n이번 요청은 참여 여부 판단이다. 채팅 문장 대신 YES 또는 NO만 출력해."
 
         try:
-            payload = {
-                "model": self.model_name,
-                "messages": messages,
-                "stream": False,
-                "think": False,
-                "keep_alive": Config.OLLAMA_KEEP_ALIVE,
-                "options": {
-                    "temperature": 0.3,
-                    "num_predict": 5,
-                    "num_ctx": Config.LLM_NUM_CTX
-                }
-            }
-            response = requests.post(self.api_url, json=payload, timeout=10)
-            if response.status_code == 200:
-                answer = response.json().get("message", {}).get("content", "")
-                return isinstance(answer, str) and answer.strip().upper() == "YES"
+            options = ({"max_completion_tokens": 20} if self.provider == "openai_compatible" else
+                       {"temperature": 0.3, "num_predict": 5, "num_ctx": Config.LLM_NUM_CTX})
+            result = self.transport.generate(messages, options, timeout=10)
+            answer = result.get("message", {}).get("content", "")
+            return result.get("done_reason") not in ("length", "content_filter") and isinstance(answer, str) and answer.strip().upper() == "YES"
         except Exception:
             pass
         return False  # 판단에 실패하면 발언하지 않는다

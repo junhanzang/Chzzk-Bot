@@ -52,7 +52,7 @@ node scripts/release-bundle.cjs pack
 
 - 현재 Windows x64만 제공한다. 코드서명 인증서와 자동 업데이트는 구성하지 않았다.
 - Chrome 확장은 ZIP으로 배포하며 사용자가 압축을 풀어 개발자 모드로 로드한다. 웹 스토어 자동 게시와 업데이트는 별도 작업이다.
-- Electron과 FFmpeg 실행 파일을 포함하지만 사용자 프로필·로그인 세션·클립·테스트 파일은 포함하지 않는다.
+- Electron과 FFmpeg 실행 파일 및 허용 목록에 있는 Python 봇 소스를 포함하지만 Python 인터프리터·모델·사용자 프로필·로그인 세션·클립·테스트 파일은 포함하지 않는다. 봇 기능은 Python과 해당 패키지를 별도로 준비해야 한다.
 - FFmpeg 라이선스·원본·빌드 출처는 각 버전의 릴리스 노트와 패키지의 `resources/ffmpeg/README`에서 확인한다.
 
 구성 근거: [GitHub 워크플로 권한](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions), [GitHub 릴리스 생성 옵션](https://cli.github.com/manual/gh_release_create), [electron-builder 파일 포함 규칙](https://www.electron.build/contents.html).

@@ -101,3 +101,13 @@
 .clip-actions .clip-star[aria-pressed="true"]{border-color:#70977b;background:#304c3b;color:var(--mint)}
 .clip-title-editor{display:flex;flex:1 1 100%;min-width:0;gap:5px;flex-wrap:wrap;align-items:center}
 .clip-title-input{flex:1;min-width:120px;height:29px;padding:4px 6px;font-size:10px}
+
+/* Viewing stays first; collection editing is a separate persistent view. */
+main{max-width:580px;gap:16px}.section-navigation{position:sticky;top:74px;z-index:1}
+.section-navigation button{padding:8px 12px;flex:1}.connection-description{font-size:12px}.pairing summary{font-size:12px}
+.favorites-drawer{border-top:1px solid #34493c;padding-top:10px}.favorites-drawer>summary{font-size:13px;color:#bdd8c7;cursor:pointer;padding:9px 2px}.favorites-drawer>section{padding-top:12px}
+.section-page .clips-list{max-height:none;overflow:visible}.section-page .clips-section{display:block}
+.slot-title h3{font-size:13px}.slot-title p,.recording-note,.viewing-note,.buffer-status{font-size:11px}.slot-actions>.button,.recording-actions .button,.buffer-toggle{font-size:12px;min-height:36px}
+.bot-workspace{display:flex;flex-direction:column;gap:15px}.bot-workspace>*{width:100%}.bot-heading>div{min-width:140px}.bot-workspace h2{font-size:18px}
+.bot-workspace .bot-session-form,.bot-workspace .bot-text-preview,.bot-workspace .bot-proposal,.bot-workspace .bot-history{padding:13px}.bot-workspace .bot-events{max-height:none;overflow:visible}
+.section-page .section-empty{font-size:12px}.bot-workspace .bot-heading{flex-wrap:wrap}.bot-heading>.bot-button{width:auto}

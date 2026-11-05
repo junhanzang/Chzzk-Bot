@@ -70,7 +70,11 @@ def collect_diagnostics(config, *, find_spec=None, fetch_models=None):
         action = "README의 설치 순서에 따라 pip install -r requirements.txt 를 실행하세요." if not installed else ""
         checks.append(Diagnostic(package, "ok" if installed else "error", "설치됨 (가져오기·장치 접근 생략)" if installed else "설치되지 않음", action))
     if config.RESPONSE_MODE == "mimic":
-        checks.append(Diagnostic("오디오·AI", "ok", "mimic 모드: 음성 인식과 Ollama 모델이 필요하지 않습니다."))
+        checks.append(Diagnostic("오디오·AI", "ok", "mimic 모드: 음성 인식과 AI 모델이 필요하지 않습니다."))
+    elif getattr(config, "LLM_PROVIDER", "ollama") == "openai_compatible":
+        checks.append(Diagnostic("외부 AI", "warning", "설정 형식만 확인했습니다. 실제 API 연결·비용·응답 품질은 미검증입니다.",
+                                 "앱 봇 화면의 문장 미리보기로 확인하세요. 이때 입력 문맥이 설정한 서비스로 전송되고 비용이 발생할 수 있습니다."))
+        checks.append(Diagnostic("오디오·GPU", "warning", "외부 AI를 사용해도 실시간 음성 인식에는 로컬 ASR·출력 장치가 필요합니다."))
     elif not any(error.startswith(("OLLAMA_HOST:", "OLLAMA_MODEL:")) for error in errors):
         try:
             models = fetch_models(config.OLLAMA_HOST, timeout=3)

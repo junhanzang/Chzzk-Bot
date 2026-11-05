@@ -11,9 +11,10 @@ export { parsePairCode } from './desktop-connection.js';
 export { layoutBounds } from './window-layout.js';
 
 const CLIP_METHODS = new Set(['setBuffer', 'saveClip', 'openClip', 'showClipsFolder', 'showClipInFolder', 'updateClip']);
+const BOT_METHODS = new Set(['getBotState', 'previewBot', 'startBot', 'stopBot', 'approveBot', 'openDeskSection']);
 const ALL_METHODS = new Set(['getState', 'pair', 'disconnect', 'addChannel', 'removeChannel', 'assignSlot', 'clearSlot',
   'selectAudio', 'focusSlot', 'arrangeWindows', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings',
-  'renameChannel', 'setChannelPinned', 'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers', 'queryClips', ...CLIP_METHODS]);
+  'renameChannel', 'setChannelPinned', 'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers', 'queryClips', ...CLIP_METHODS, ...BOT_METHODS]);
 
 export function panelSenderAllowed(sender, chromeApi) {
   return sender?.id === chromeApi.runtime.id && sender.url === chromeApi.runtime.getURL('panel.html') && !sender.tab?.incognito;
@@ -70,6 +71,8 @@ export class DeskController {
 
   handle(method, arg) {
     if (!ALL_METHODS.has(method)) return Promise.reject(new Error('지원하지 않는 요청입니다.'));
+    // Stopping must not wait behind a model request or another queued action.
+    if (method === 'stopBot') return this.initialize().then(() => this.perform(method, arg));
     if (method === 'getState' && this.stateRequest) return this.stateRequest;
     const promise = this.enqueue(() => this.perform(method, arg));
     if (method === 'getState') {
@@ -152,6 +155,7 @@ export class DeskController {
         playbackMode: linked ? base.slots[slot.slotId].playbackMode : 'browser',
         replay: linked ? base.slots[slot.slotId].replay : idleReplay() })),
       audioSlot: view.audioSlot, clips: base.clips, savingSlots: base.savingSlots,
+      bot: linked && this.desktop.status.status === 'connected' ? base.bot : globalThis.DeskBotState.unavailableBot(),
       watchPresets: this.watch.presets, clipRevision: base.clipRevision, clipTotal: base.clipTotal, actionSummary: null,
       ffmpegAvailable: linked && this.desktop.status.status === 'connected' && base.ffmpegAvailable,
       layout: linked ? base.layout : preferences.layout, mainSlot: linked ? base.mainSlot : preferences.mainSlot,
@@ -164,6 +168,12 @@ export class DeskController {
   }
 
   async perform(method, arg) {
+    if (BOT_METHODS.has(method)) {
+      if (!this.desktop.paired) throw new Error('봇은 데스크톱 앱을 연결하면 사용할 수 있어요.');
+      await this.desktop.request(method, arg);
+      await this.refreshRemote({ reconcile: false });
+      return this.snapshot();
+    }
     if (method === 'queryClips') {
       if (!this.desktop.paired) throw new Error('클립 보관함은 데스크톱 앱을 연결하면 사용할 수 있어요.');
       return sanitizeClipPage(await this.desktop.request(method, arg), this.model);

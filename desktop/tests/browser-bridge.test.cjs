@@ -8,6 +8,13 @@ const { BrowserBridge, BridgeUserError } = require('../lib/browser-bridge.cjs');
 const ORIGIN = `chrome-extension://${'a'.repeat(32)}`;
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
+test('connected Chrome can call bot controls and clip queries but not configure or authenticate', async t => {
+  const f = await fixture(t, { getBotState: () => ({ status: 'idle' }), queryClips: () => ({ items: [] }), configureBot: () => 'forbidden', authenticate: () => 'forbidden' });
+  assert.equal((await request(f, { body: { method: 'getBotState' } })).body.value.status, 'idle');
+  assert.deepEqual((await request(f, { body: { method: 'queryClips', arg: {} } })).body.value.items, []);
+  for (const method of ['configureBot', 'authenticate']) assert.notEqual((await request(f, { body: { method } })).status, 200);
+});
+
 async function fixture(t, handlers = {}, options = {}) {
   const bridge = new BrowserBridge({ handlers: { getState: () => ({ connected: true }), ...handlers }, ...options });
   const code = await bridge.start();

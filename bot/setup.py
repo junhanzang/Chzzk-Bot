@@ -96,8 +96,14 @@ def run_setup(path=None, *, input_fn=None, output=print):
 
         ask("CHZZK_CHANNEL_ID", "치지직 방송 URL 또는 채널 ID", normalize_channel_id)
         ask("RESPONSE_MODE", "응답 모드 (ai / hybrid / mimic)", validate_field("RESPONSE_MODE"))
-        ask("OLLAMA_MODEL", "Ollama 모델", validate_field("OLLAMA_MODEL"))
-        ask("OLLAMA_HOST", "Ollama 주소", validate_field("OLLAMA_HOST"))
+        if defaults["LLM_PROVIDER"] == "openai_compatible":
+            ask("LLM_MODEL", "외부 AI 모델", validate_field("LLM_MODEL"))
+            from bot.settings import normalize_api_base_url
+            ask("LLM_BASE_URL", "외부 AI 기본 주소", normalize_api_base_url)
+            output("API 키는 앱 설정에서 관리하거나 LLM_API_KEY 환경 변수로 지정하세요.")
+        else:
+            ask("OLLAMA_MODEL", "Ollama 모델", validate_field("OLLAMA_MODEL"))
+            ask("OLLAMA_HOST", "Ollama 주소", validate_field("OLLAMA_HOST"))
         ask("AUDIO_SPEAKER_ID", "출력 장치 ID (--list-speakers로 확인, -는 시스템 기본 장치)", allow_blank=True)
         ask("RESPONSE_COOLDOWN", "최소 응답 간격(초)", validate_field("RESPONSE_COOLDOWN"))
         # Only update these keys. In particular, never serialize DEFAULTS over

@@ -9,6 +9,20 @@ const ID_D = '44444444444444444444444444444444';
 const TOKEN = 'a'.repeat(48);
 const CODE = `43210:${TOKEN}`;
 
+test('bot controls require app pairing, keep transcripts out of stored session and reject credential configuration', async () => {
+  const f = await setup();
+  await assert.rejects(f.controller.handle('getBotState'), /연결/);
+  await assert.rejects(f.controller.handle('configureBot', { apiKey: 'never-forward' }), /지원하지/);
+  f.remote.state.bot = { status: 'idle', sendMode: 'preview', events: [{ id: '1', type: 'generated', at: 1, speech: 'private transcript', response: '응답' }], config: { provider: 'ollama', apiKey: 'never-forward', apiKeySet: true } };
+  await f.controller.handle('pair', CODE);
+  const state = await f.controller.handle('getBotState');
+  assert.equal(state.bot.events[0].speech, 'private transcript');
+  assert(!JSON.stringify(state).includes('never-forward'));
+  assert(!JSON.stringify(f.session).includes('private transcript'));
+  await f.controller.handle('stopBot');
+  assert(f.remote.calls.some(([method]) => method === 'stopBot'));
+});
+
 function browserFixture({ closeEmptyWindows = false } = {}) {
   const local = {}, session = {}, tabs = new Map(), effects = [];
   let nextTabId = 1, nextWindowId = 2, focusedWindowId = 1;

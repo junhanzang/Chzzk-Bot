@@ -212,3 +212,17 @@
 .clip-actions .clip-star[aria-pressed="true"]{border-color:#70977b;background:#304c3b;color:var(--mint)}
 .clip-title-editor{display:flex;flex:1 1 100%;min-width:0;gap:5px;flex-wrap:wrap;align-items:center}
 .clip-title-input{flex:1;min-width:110px;height:28px;padding:4px 6px;border:1px solid #4f705b;border-radius:5px;background:#132219;color:var(--text);font:inherit;font-size:10px}
+
+/* Purpose-based navigation preserves players and recording while managing tools. */
+.app-layout:has(.sidebar[hidden]){grid-template-columns:minmax(0,1fr)}
+.workspace>.section-navigation{margin-bottom:2px}
+.workspace .clip-workspace{display:block;flex:1 0 auto;min-height:400px}
+.clip-workspace .clips-panel{min-height:380px}
+.clip-workspace .clips-list{overflow:visible;max-height:none}
+.workspace .settings-workspace{display:grid;grid-template-columns:minmax(0,650px) minmax(240px,340px);align-items:start;gap:24px}
+.settings-workspace .browser-guide{font-size:14px;padding:20px}
+.settings-workspace .browser-guide h2{font-size:18px}.settings-workspace .browser-guide p{font-size:13px}.settings-workspace .browser-guide small{font-size:12px}
+.settings-workspace .browser-guide .button,.settings-workspace .browser-guide .text-button{font-size:12px;min-height:38px}
+.settings-workspace .browser-guide #browser-connection-status{font-size:12px}
+.workspace .section-page{flex:1 0 auto;padding-bottom:12px}.workspace .workspace-footer{margin-top:auto}
+@media(max-width:1100px){.workspace .settings-workspace{grid-template-columns:1fr}.settings-workspace .browser-guide{max-width:650px}}

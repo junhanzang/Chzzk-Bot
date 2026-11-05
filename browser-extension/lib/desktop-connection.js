@@ -1,7 +1,10 @@
 import '../shared/channels.js';
+import '../shared/bot-state.js';
 
 const { SLOT_IDS, LAYOUTS, CLIP_DURATIONS } = globalThis.DeskChannels;
 const AUTH_STATES = new Set(['checking', 'signed_in', 'signed_out', 'error']);
+const { sanitizeBotState, unavailableBot } = globalThis.DeskBotState;
+const sessionRemote = remote => ({ ...remote, bot: unavailableBot() });
 
 export function parsePairCode(code) {
   if (typeof code !== 'string') throw new Error('앱에서 복사한 연결 코드를 입력해 주세요.');
@@ -14,6 +17,7 @@ export function idleReplay() { return { state: 'idle', bufferedSeconds: 0 }; }
 
 export function blankRemote() {
   return { channels: [], slots: SLOT_IDS.map(slotId => ({ slotId, channelId: null, replay: idleReplay() })),
+    bot: unavailableBot(),
     layout: 'side-by-side', mainSlot: 0, clipSeconds: 30, watchPresets: [], clipRevision: null, clipTotal: 0, actionSummary: null,
     autoClipSettings: {}, autoClips: SLOT_IDS.map(slotId => ({ slotId, channelId: null, generation: null,
       status: 'unavailable', message: '자동 클립은 데스크톱 앱을 연결하면 사용할 수 있어요.' })),
@@ -26,6 +30,7 @@ export function sanitizeRemote(value, model) {
   const channels = model.normalizeSettings({ channels: value.channels }).channels;
   return {
     channels,
+    bot: sanitizeBotState(value.bot),
     slots: SLOT_IDS.map(slotId => {
       const source = value.slots.find(slot => slot?.slotId === slotId) || {};
       const channelId = channels.some(channel => channel.id === source.channelId) ? source.channelId : null;
@@ -116,7 +121,7 @@ export class DesktopConnection {
       try { this.#pairing = parsePairCode(`${pairing.port}:${pairing.token}`); }
       catch { await this.storage.setPairing(null); }
     }
-    if (session?.remote) this.#remote = sanitizeRemote(session.remote, this.model);
+    if (session?.remote) this.#remote = sanitizeRemote(sessionRemote(session.remote), this.model);
     this.#status = this.paired ? { status: 'unavailable', message: '데스크톱 앱 연결을 확인하고 있어요.' } : { status: 'standalone' };
   }
 
@@ -129,7 +134,7 @@ export class DesktopConnection {
     this.#pairing = pairing;
     this.#remote = remote;
     this.#status = { status: 'connected' };
-    await this.storage.updateSession({ remote });
+    await this.storage.updateSession({ remote: sessionRemote(remote) });
   }
 
   async disconnect() {
@@ -137,14 +142,14 @@ export class DesktopConnection {
     this.#pairing = null;
     this.#remote = blankRemote();
     this.#status = { status: 'standalone' };
-    await this.storage.updateSession({ remote: this.#remote });
+    await this.storage.updateSession({ remote: sessionRemote(this.#remote) });
   }
 
   async refresh() {
     try {
       this.#remote = sanitizeRemote(await this.request('getState'), this.model);
       this.#status = { status: 'connected' };
-      await this.storage.updateSession({ remote: this.#remote });
+      await this.storage.updateSession({ remote: sessionRemote(this.#remote) });
       return this.remote;
     } catch (error) {
       this.#status = { status: 'unavailable', message: error.message };

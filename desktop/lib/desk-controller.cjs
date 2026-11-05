@@ -6,6 +6,7 @@ const { parseChannel, cleanTitle, normalizeSettings, normalizeAutoClipConfig, up
 const { ClipLibrary, loadClipLibrary } = require('./clip-library.cjs');
 const { AutoClipService } = require('./auto-clip-service.cjs');
 const { WatchWorkspace } = require('./watch-workspace.cjs');
+const { unavailableBot } = require('../../browser-extension/shared/bot-state.js');
 
 async function loadDeskProfile({ store, dataDir, preferredClipsDir }) {
   const stored = await store.load();
@@ -21,10 +22,11 @@ async function loadDeskProfile({ store, dataDir, preferredClipsDir }) {
 const COMMANDS = Object.freeze(['getState', 'refreshAuth', 'login', 'setClipSeconds', 'setAutoRewards', 'setAutoClipSettings', 'submitChatBatch', 'setLayout',
   'addChannel', 'removeChannel', 'assignSlot', 'clearSlot', 'selectAudio', 'setBuffer', 'saveClip', 'reloadSlot',
   'openExternal', 'openClip', 'showClipsFolder', 'setPlayerBounds', 'renameChannel', 'setChannelPinned',
-  'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers', 'queryClips', 'updateClip', 'showClipInFolder']);
+  'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers', 'queryClips', 'updateClip', 'showClipInFolder',
+  'getBotState', 'configureBot', 'previewBot', 'startBot', 'stopBot', 'approveBot']);
 
 class DeskController extends EventEmitter {
-  constructor({ profile, store, players, recordings, auth, version, browserAvailable, openExternal, openPath, revealPath }) {
+  constructor({ profile, store, players, recordings, auth, version, browserAvailable, openExternal, openPath, revealPath, bot }) {
     super();
     this.settings = profile.settings;
     this.clips = profile.clips;
@@ -34,6 +36,8 @@ class DeskController extends EventEmitter {
     this.players = players;
     this.recordings = recordings;
     this.auth = auth;
+    this.bot = bot;
+    bot?.on('change', () => this.publish());
     this.version = version;
     this.browserAvailable = browserAvailable;
     this.openExternalUrl = openExternal;
@@ -80,6 +84,7 @@ class DeskController extends EventEmitter {
     const clips = this.library.committedClips;
     return {
       version: this.version, channels: settings.channels, audioSlot: this.players.audioSlot, clips: clips.slice(0, 100),
+      bot: this.bot?.snapshot() || unavailableBot('봇 제어 연결이 준비되지 않았어요.'),
       clipRevision: this.clipRevision, clipTotal: clips.length, watchPresets: settings.watchPresets, actionSummary: null,
       layout: settings.layout, mainSlot: settings.mainSlot, clipSeconds: settings.clipSeconds,
       autoClipSettings: settings.autoClipSettings, autoClips: this.autoClips.snapshot(),
@@ -141,6 +146,13 @@ class DeskController extends EventEmitter {
 
   refreshAuth() { return this.auth.refresh(); }
   login() { return this.auth.open(); }
+  requireBot() { if (!this.bot || this.quitting) throw new Error('봇 제어 연결을 사용할 수 없습니다.'); return this.bot; }
+  getBotState() { return this.requireBot().getState(); }
+  configureBot(arg) { return this.requireBot().configure(arg); }
+  previewBot(arg) { return this.requireBot().command('preview', arg); }
+  startBot(arg) { return this.requireBot().command('start', arg); }
+  stopBot() { return this.requireBot().command('stop'); }
+  approveBot(arg) { return this.requireBot().command('approve', arg); }
 
   async setClipSeconds(seconds) {
     validClipSeconds(seconds); this.settings.clipSeconds = seconds;
@@ -300,6 +312,7 @@ class DeskController extends EventEmitter {
   beginShutdown() { this.quitting = true; this.autoClips.close(); this.players.beginShutdown(); this.recordings.beginShutdown(); }
   async shutdown() {
     this.autoClips.close();
+    await this.bot?.close();
     await this.recordings.shutdown();
     await this.store.flush().catch(() => {});
     this.players.destroyAll();
