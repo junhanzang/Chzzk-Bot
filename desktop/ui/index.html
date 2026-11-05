@@ -7,6 +7,7 @@
   <title>치지직 데스크</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="../../browser-extension/shared/ui/workspace.css">
+  <link rel="stylesheet" href="../../browser-extension/shared/ui/channel-discovery.css">
   <script type="module" src="renderer.mjs"></script>
 </head>
 <body>
@@ -24,11 +25,12 @@
   <div class="app-layout">
     <aside class="sidebar" data-section-panel="watch">
       <div class="sidebar-label"><h2>즐겨찾는 채널</h2><span class="count" id="channel-count">0</span></div>
-      <p class="sidebar-description">A · B · C · D에서 시청할 자리를 골라요.</p>
+      <p class="sidebar-description">★ 고정한 방송은 맨 위에 모아요.<br>A · B · C · D에서 시청할 자리를 골라요.</p>
       <input id="channel-search" class="collection-search" type="search" placeholder="즐겨찾기 검색" aria-label="즐겨찾기 이름 또는 채널 ID 검색" autocomplete="off" maxlength="200">
       <div id="channels-list" class="channels-list"></div>
       <p id="channels-no-results" class="search-empty" role="status" hidden>검색에 맞는 채널이 없어요.</p>
       <div class="sidebar-empty" id="channels-empty"><div class="empty-bookmark" aria-hidden="true">＋</div><strong>좋아하는 방송부터</strong><p>위에 채널 주소를 넣으면<br>여기에 모아둘 수 있어요.</p></div>
+      <div id="channel-discovery" class="channel-discovery"></div>
       <div class="sidebar-bottom"><span class="local-dot" aria-hidden="true"></span><span>기록과 클립은 내 컴퓨터에</span><small id="version-label">DESK / 로컬 보관</small></div>
     </aside>
 

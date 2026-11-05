@@ -10,4 +10,6 @@ export const letters = ['A', 'B', 'C', 'D'];
 export const ordinals = ['첫', '두', '세', '네'];
 export const slotKey = slotId => `slot-${slotId}`;
 export const getSlot = (state, slotId) => state.slots.find(slot => Number(slot.slotId) === slotId) || { slotId };
+export const audioSlots = state => Array.isArray(state.audioSlots) ? state.audioSlots.filter(id => slotIds.includes(id)) : slotIds.includes(state.audioSlot) ? [state.audioSlot] : [];
+export const isAudible = (state, slotId) => audioSlots(state).includes(slotId);
 export const errorMessage = error => error && typeof error.message === 'string' ? error.message : '요청을 처리하지 못했어요. 다시 시도해 주세요.';

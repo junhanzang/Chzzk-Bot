@@ -1,5 +1,5 @@
 import { createDom, createEventScope } from '../../browser-extension/shared/ui/dom.mjs';
-import { presentation, slotIds, letters, ordinals, layouts, slotKey, getSlot as findSlot } from '../../browser-extension/shared/ui/model.mjs';
+import { presentation, slotIds, letters, ordinals, layouts, slotKey, isAudible, getSlot as findSlot } from '../../browser-extension/shared/ui/model.mjs';
 import { canSave as canSaveClip, isSaving as isSavingClip } from './state.mjs';
 import { autoClipForSlot, createAutoClipControls } from '../../browser-extension/shared/ui/auto-clips.mjs';
 
@@ -31,6 +31,10 @@ export function createPlayersView({ document, run, notify }) {
     main.dataset.action = 'main';
     main.setAttribute('aria-label', `${letters[slotId]} 방송 메인으로`);
     $('.player-menu', card).prepend(main);
+    const chat = element('button', 'button button-quiet chat-popout-button', '채팅 새 창');
+    chat.type = 'button'; chat.dataset.action = 'chat';
+    chat.setAttribute('aria-label', `방송 ${letters[slotId]} 채팅을 별도 창으로 열기`);
+    $('.player-footer', card).prepend(chat);
     const reward = element('div', 'reward-status');
     reward.dataset.role = 'reward-status';
     reward.setAttribute('role', 'status');
@@ -60,7 +64,7 @@ export function createPlayersView({ document, run, notify }) {
       const seconds = Math.max(0, Math.floor(Number(replay.bufferedSeconds) || 0));
       const enabled = bufferEnabled(replay);
       const working = pending.has(slotKey(slotId));
-      const audible = assigned && Number(state.audioSlot) === slotId && state.audioSlot !== null;
+      const audible = assigned && isAudible(state, slotId);
       card.hidden = !visibleIds.includes(slotId);
       card.classList.toggle('main-player', mainSlot === slotId);
       const mainButton = $('[data-action="main"]', card);
@@ -90,7 +94,9 @@ export function createPlayersView({ document, run, notify }) {
       }
       browserNote.hidden = !external;
       $('button', browserNote).disabled = working;
-      $('[data-role="audio-label"]', card).textContent = audible ? '지금 듣는 방송' : '이 방송 듣기';
+      $('[data-role="audio-label"]', card).textContent = audible ? '소리 켜짐 · 끄기' : '소리 켜기';
+      $('[data-action="audio"]', card).title = '여러 방송의 소리를 함께 켤 수 있어요. 숫자 단축키는 한 방송만 들어요.';
+      $('[data-action="chat"]', card).disabled = !assigned || working;
       $('[data-action="audio"]', card).setAttribute('aria-pressed', String(audible));
       ['audio', 'reload', 'external', 'clear'].forEach(name => { $(`[data-action="${name}"]`, card).disabled = !assigned || working || pending.has('audio') || (external && name !== 'clear'); });
       if (external) $('[data-role="audio-label"]', card).textContent = '소리는 크롬에서 전환';
@@ -128,7 +134,8 @@ export function createPlayersView({ document, run, notify }) {
     events.on(card, 'pointerdown', () => { focusedSlot = slotId; });
     events.on(card, 'focusin', () => { focusedSlot = slotId; });
     events.on($('[data-action="main"]', card), 'click', () => run('layout', 'setLayout', { layout: snapshot.state.layout || 'side-by-side', mainSlot: slotId }));
-    events.on($('[data-action="audio"]', card), 'click', () => run('audio', 'selectAudio', slotId));
+    events.on($('[data-action="audio"]', card), 'click', () => run('audio', 'setAudioEnabled', { slotId, enabled: !isAudible(snapshot.state, slotId) }));
+    events.on($('[data-action="chat"]', card), 'click', () => run(`chat-${slotId}`, 'openChat', slotId));
     events.on($('[data-action="reload"]', card), 'click', () => run(slotKey(slotId), 'reloadSlot', slotId));
     events.on($('[data-action="external"]', card), 'click', () => run(slotKey(slotId), 'openExternal', slotId));
     events.on($('[data-action="clear"]', card), 'click', () => run(slotKey(slotId), 'clearSlot', slotId));

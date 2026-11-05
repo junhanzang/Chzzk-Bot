@@ -1,4 +1,5 @@
 import '../shared/channels.js';
+import { normalWindow } from './normal-window.js';
 
 const { SLOT_IDS, LAYOUTS } = globalThis.DeskChannels;
 
@@ -47,12 +48,13 @@ export class WindowLayout {
 
   async arrange(tabs, { layout, mainSlot }, persist) {
     if (!tabs.length) throw new Error('방송 탭을 먼저 열어 주세요.');
-    const current = await this.chrome.windows.getLastFocused();
-    if (current.incognito || !Number.isFinite(current.width) || !Number.isFinite(current.height)) {
+    const current = await normalWindow(this.chrome, window =>
+      Number.isFinite(window.width) && window.width > 0 && Number.isFinite(window.height) && window.height > 0);
+    if (!current && !this.arrangementBounds) {
       throw new Error('일반 Chrome 창에서 다시 시도해 주세요.');
     }
     // Reuse the full pre-split rectangle; repeating an arrangement must not shrink it.
-    if (!this.arrangementBounds || !this.managedWindows.has(current.id)) {
+    if (current && (!this.arrangementBounds || !this.managedWindows.has(current.id))) {
       this.arrangementBounds = { left: current.left || 0, top: current.top || 0, width: current.width, height: current.height };
     }
     const rectangles = layoutBounds(layout, tabs.map(item => item.slotId), mainSlot, this.arrangementBounds);

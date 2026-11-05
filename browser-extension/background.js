@@ -26,7 +26,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-chrome.tabs.onUpdated.addListener(tabId => { controller.onTabChanged(tabId).catch(() => {}); });
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => { controller.onTabChanged(tabId, changeInfo, tab).catch(() => {}); });
 chrome.tabs.onRemoved.addListener(tabId => { controller.onTabChanged(tabId).catch(() => {}); });
 chrome.commands.onCommand.addListener(command => {
   let request;

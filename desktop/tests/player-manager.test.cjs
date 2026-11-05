@@ -59,3 +59,43 @@ test('bounds stay inside the shell and shutdown suppresses native shortcuts and 
   f.views[0].webContents.emit('did-finish-load');
   assert.deepEqual(shortcuts, []); assert.deepEqual(f.attached, []); f.manager.destroyAll();
 });
+
+test('independent audio toggles keep multiple players audible while solo shortcuts stay compatible', () => {
+  const f = fixture(); for (const slotId of [0, 1, 2]) f.manager.open(slotId, channel);
+  assert.deepEqual(f.manager.audioSlots, []); assert(f.views.every(view => view.webContents.muted));
+  f.manager.setAudioEnabled({ slotId: 0, enabled: true }); f.manager.setAudioEnabled({ slotId: 1, enabled: true });
+  assert.deepEqual(f.manager.audioSlots, [0, 1]); assert.equal(f.manager.audioSlot, 1);
+  assert.deepEqual(f.views.map(view => view.webContents.muted), [false, false, true]);
+  f.manager.setAudioEnabled({ slotId: 0, enabled: false }); assert.deepEqual(f.manager.audioSlots, [1]);
+  f.manager.setAudioEnabled({ slotId: 2, enabled: true }); f.manager.setAudioEnabled({ slotId: 2, enabled: false });
+  assert.equal(f.manager.audioSlot, 1);
+  f.manager.selectAudio(0); assert.deepEqual(f.manager.audioSlots, [0]);
+  assert.deepEqual(f.views.map(view => view.webContents.muted), [false, true, true]);
+  f.manager.selectAudio(null); assert.deepEqual(f.manager.audioSlots, []); assert.equal(f.manager.audioSlot, null);
+  assert.throws(() => f.manager.setAudioEnabled({ slotId: 4, enabled: true }));
+  assert.throws(() => f.manager.setAudioEnabled({ slotId: 0, enabled: 'true' }));
+});
+
+test('closing one selected player keeps the others and cannot clear a replacement during shutdown wait', async () => {
+  const f = fixture(), gate = deferred(); f.manager.open(0, channel); f.manager.open(1, channel);
+  f.manager.setAudioEnabled({ slotId: 1, enabled: true }); f.manager.setAudioEnabled({ slotId: 0, enabled: true });
+  const closing = f.manager.close(0, () => gate.promise);
+  assert.deepEqual(f.manager.audioSlots, [1]); assert.equal(f.manager.audioSlot, 1);
+  assert.equal(f.views[1].webContents.muted, false);
+  f.manager.open(0, 'b'.repeat(32)); assert.equal(f.views[2].webContents.muted, true);
+  f.manager.setAudioEnabled({ slotId: 0, enabled: true });
+  f.views[2].webContents.emit('did-finish-load');
+  gate.resolve(); await closing;
+  assert.deepEqual(f.manager.audioSlots, [0, 1]); assert.equal(f.manager.audioSlot, 0);
+  assert.equal(f.manager.status(0).pageStatus, 'ready'); assert.equal(f.views[2].webContents.muted, false);
+  const selected = f.manager.audioSlots; selected.length = 0; assert.deepEqual(f.manager.audioSlots, [0, 1]);
+});
+
+test('clip shortcut targets the most recently enabled player in a multi-audio selection', () => {
+  const f = fixture(), shortcuts = [];
+  f.manager.on('shortcut', command => shortcuts.push(command));
+  f.manager.open(0, channel); f.manager.open(1, channel);
+  f.manager.setAudioEnabled({ slotId: 0, enabled: true }); f.manager.setAudioEnabled({ slotId: 1, enabled: true });
+  f.views[0].webContents.emit('before-input-event', { preventDefault() {} }, { type: 'keyDown', control: true, shift: true, code: 'KeyS' });
+  assert.deepEqual(shortcuts, [{ method: 'saveClip', slotId: 1 }]);
+});

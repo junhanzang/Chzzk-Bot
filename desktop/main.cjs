@@ -18,6 +18,8 @@ const { PlayerManager } = require('./lib/player-manager.cjs');
 const { RecordingService } = require('./lib/recording-service.cjs');
 const { DeskController, loadDeskProfile } = require('./lib/desk-controller.cjs');
 const { BotService } = require('./lib/bot-service.cjs');
+const { FollowingSession } = require('./lib/following-session.cjs');
+const { ChatWindows } = require('./lib/chat-windows.cjs');
 
 app.setName('Chzzk Desk');
 const profileDir = resolveProfilePath({
@@ -74,6 +76,9 @@ app.whenReady().then(async () => {
   remoteSession.setPermissionCheckHandler((_contents, permission) => permission === 'fullscreen');
   remoteSession.on('will-download', event => event.preventDefault());
   authSession = new AuthSession({ session: remoteSession, BrowserWindow, partition: remotePartition });
+  const following = new FollowingSession({ auth: authSession, fetchImpl: (url, options) => remoteSession.fetch(url, options), onChange: publish });
+  const chatWindows = new ChatWindows({ BrowserWindow, partition: remotePartition,
+    onLogin: () => authSession.open(), onNotice: notify });
   const rewards = new RewardsHost({ enabled: profile.settings.rewardSettings.enabled, onChange: publish,
     fetchImpl: (url, options) => remoteSession.fetch(url, options) });
   const gateway = new MediaGateway({ fetchImpl: (url, options) => remoteSession.fetch(url, options) });
@@ -90,11 +95,11 @@ app.whenReady().then(async () => {
   const players = new PlayerManager({ window: win, WebContentsView, partition: remotePartition, rewards, chat });
   players.on('login-requested', () => authSession.open());
   players.on('external-requested', url => { shell.openExternal(url).catch(() => {}); });
-  authSession.on('signed-in', () => players.reloadAll());
+  authSession.on('signed-in', () => { players.reloadAll(); chatWindows.reloadAll(); });
   const bot = new BotService({ sourceRoot: app.isPackaged ? path.join(process.resourcesPath, 'bot') : path.resolve(__dirname, '..'),
     dataDir, safeStorage, readAuth: () => authSession.readBotAuth() });
   controller = new DeskController({ profile, store, players, recordings, auth: authSession, version: app.getVersion(),
-    bot,
+    bot, following, chatWindows,
     browserAvailable: () => Boolean(browserBridge?.connectionCode),
     openExternal: url => shell.openExternal(url), openPath: target => shell.openPath(target), revealPath: target => shell.showItemInFolder(target) });
   controller.on('change', publish);

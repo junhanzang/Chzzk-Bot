@@ -26,7 +26,7 @@ test('bot controls require app pairing, keep transcripts out of stored session a
 function browserFixture({ closeEmptyWindows = false } = {}) {
   const local = {}, session = {}, tabs = new Map(), effects = [];
   let nextTabId = 1, nextWindowId = 2, focusedWindowId = 1;
-  const windows = new Map([[1, { id: 1, incognito: false, left: 20, top: 30, width: 1400, height: 900 }]]);
+  const windows = new Map([[1, { id: 1, type: 'normal', incognito: false, left: 20, top: 30, width: 1400, height: 900 }]]);
   const area = data => ({
     async get(keys) { return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(data[key])])); },
     async set(values) { Object.assign(data, structuredClone(values)); },
@@ -96,15 +96,18 @@ function remoteFixture() {
   let unavailable = false;
   const fetchImpl = async (url, options) => {
     if (unavailable) throw new TypeError('network');
+    if (url.startsWith('https://api.chzzk.naver.com/service/v1/channels/followings?')) return {
+      ok: true, status: 200, json: async () => ({ code: 200, content: { totalPage: 1,
+        followingList: [{ channel: { channelId: ID_C, channelName: '팔로잉 C', openLive: true } }] } }) };
     assert.equal(url, 'http://127.0.0.1:43210/rpc');
     assert.equal(options.headers.Authorization, `Bearer ${TOKEN}`);
     assert.equal(options.credentials, 'omit');
     const { method, arg } = JSON.parse(options.body);
     calls.push([method, arg]);
     if (method === 'addChannel') {
-      state.channels.push({ id: arg.input, name: arg.name });
+      state.channels.push({ id: arg.input, name: arg.name, ...(arg.pinned ? { pinned: true } : {}) });
       const empty = state.slots.find(slot => !slot.channelId);
-      if (empty) empty.channelId = arg.input;
+      if (empty && arg.open !== false) empty.channelId = arg.input;
     }
     if (method === 'assignSlot') Object.assign(state.slots[arg.slotId], { channelId: arg.channelId, playbackMode: arg.playbackMode });
     if (method === 'setLayout') Object.assign(state, { layout: arg.layout, mainSlot: arg.mainSlot });
@@ -178,6 +181,48 @@ test('standalone favorites open official muted tabs and switch only managed audi
   assert.equal(f.tabs.get(state.slots[1].tabId).mutedInfo.muted, false);
   assert.equal(f.tabs.get(unrelated.id).mutedInfo.muted, false);
   await assert.rejects(f.controller.handle('setBuffer', { slotId: 1, enabled: true }), /데스크톱 앱/);
+});
+
+for (const paired of [false, true]) test(`followed channels pin persistently without opening streams (${paired ? 'paired' : 'standalone'})`, async () => {
+  const f = await setup(); if (paired) await f.controller.handle('pair', CODE);
+  const following = await f.controller.handle('refreshFollowing');
+  assert.equal(following.following.status, 'ready');
+  assert.equal(following.following.channels[0].id, ID_C);
+  assert.equal(following.channels.length, 0); assert.equal(f.tabs.size, 0);
+  const pinned = await f.controller.handle('pinFollowedChannel', ID_C);
+  assert.equal(pinned.channels[0].pinned, true); assert.equal(pinned.channels[0].name, '팔로잉 C');
+  assert(pinned.slots.every(slot => !slot.channelId)); assert.equal(f.tabs.size, 0);
+  await f.controller.handle('renameChannel', { channelId: ID_C, name: '내 별명' });
+  await f.controller.handle('pinFollowedChannel', ID_C);
+  const state = await f.controller.handle('getState');
+  assert.equal(state.channels.length, 1); assert.equal(state.channels[0].name, '내 별명');
+  assert(!JSON.stringify(f.session).includes('팔로잉 C'), 'Automatic account list is never persisted in session');
+  await assert.rejects(f.controller.handle('pinFollowedChannel', ID_D), /팔로잉/);
+});
+
+test('multi-audio controller toggles only the requested broadcast and preserves a primary clip target', async () => {
+  const f = await setup();
+  await f.controller.handle('addChannel', { input: ID_A, name: 'A' });
+  await f.controller.handle('addChannel', { input: ID_B, name: 'B' });
+  await f.controller.handle('setAudioEnabled', { slotId: 0, enabled: true });
+  let state = await f.controller.handle('setAudioEnabled', { slotId: 1, enabled: true });
+  assert.deepEqual(state.audioSlots, [0, 1]); assert.equal(state.audioSlot, 1);
+  assert(state.slots.filter(slot => slot.tabId).every(slot => !f.tabs.get(slot.tabId).mutedInfo.muted));
+  state = await f.controller.handle('setAudioEnabled', { slotId: 0, enabled: false });
+  assert.deepEqual(state.audioSlots, [1]);
+  assert.deepEqual((await f.controller.handle('selectAudio', null)).audioSlots, []);
+});
+
+test('login return invalidates account list immediately while another command holds the queue', async () => {
+  const f = await setup(); await f.controller.handle('refreshFollowing');
+  assert.equal(f.controller.snapshot().following.status, 'ready');
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const running = f.controller.enqueue(() => gate);
+  await new Promise(setImmediate);
+  const changed = f.controller.onTabChanged(99, { status: 'complete' }, { url: 'https://chzzk.naver.com/' });
+  try { assert.deepEqual(f.controller.snapshot().following.channels, []); assert.equal(f.controller.snapshot().following.status, 'idle'); }
+  finally { release(); }
+  await running; await changed;
 });
 
 test('invalid URLs do not persist favorites or open tabs', async () => {

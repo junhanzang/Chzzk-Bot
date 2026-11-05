@@ -15,25 +15,46 @@ class PlayerManager extends EventEmitter {
     this.views = new Map();
     this.pages = new Map();
     this.audioSlot = null;
+    this.enabledAudio = new Set();
     this.quitting = false;
   }
 
   has(slotId) { return this.views.has(slotId); }
+  get audioSlots() { return SLOT_IDS.filter(slotId => this.enabledAudio.has(slotId)); }
   status(slotId) { return this.pages.get(slotId) || {}; }
   rewardStatus(slotId) { return this.rewards.status(slotId); }
   setAutoRewards(enabled) { return this.rewards.setEnabled(enabled); }
   update(slotId, state) { this.pages.set(slotId, state); this.emit('change'); }
 
   applyAudio() {
-    for (const [slotId, view] of this.views) if (!view.webContents.isDestroyed()) view.webContents.setAudioMuted(slotId !== this.audioSlot);
+    for (const [slotId, view] of this.views) if (!view.webContents.isDestroyed()) view.webContents.setAudioMuted(!this.enabledAudio.has(slotId));
+  }
+
+  removeAudio(slotId) {
+    this.enabledAudio.delete(slotId);
+    if (this.audioSlot === slotId) this.audioSlot = [...this.enabledAudio].at(-1) ?? null;
+  }
+
+  setAudioEnabled({ slotId, enabled } = {}) {
+    validSlot(slotId);
+    if (typeof enabled !== 'boolean') throw new Error('소리 설정이 올바르지 않습니다.');
+    if (this.quitting) throw new Error('앱을 종료하고 있습니다.');
+    const view = this.views.get(slotId);
+    if (enabled && (!view || view.webContents.isDestroyed())) throw new Error('먼저 방송을 열어 주세요.');
+    if (enabled) {
+      this.enabledAudio.delete(slotId); this.enabledAudio.add(slotId); this.audioSlot = slotId;
+    } else this.removeAudio(slotId);
+    this.applyAudio(); this.emit('change');
   }
 
   selectAudio(slotId) {
+    if (this.quitting) throw new Error('앱을 종료하고 있습니다.');
     if (slotId !== null) {
       validSlot(slotId);
-      if (!this.has(slotId)) throw new Error('먼저 방송을 열어 주세요.');
+      if (!this.has(slotId) || this.views.get(slotId).webContents.isDestroyed()) throw new Error('먼저 방송을 열어 주세요.');
     }
     this.audioSlot = slotId;
+    this.enabledAudio.clear(); if (slotId !== null) this.enabledAudio.add(slotId);
     this.applyAudio(); this.emit('change');
   }
 
@@ -51,6 +72,7 @@ class PlayerManager extends EventEmitter {
   }
 
   open(slotId, channelId) {
+    this.removeAudio(slotId);
     const view = new this.View({ webPreferences: { partition: this.partition, nodeIntegration: false,
       contextIsolation: true, sandbox: true, autoplayPolicy: 'no-user-gesture-required', backgroundThrottling: false } });
     const contents = view.webContents;
@@ -59,7 +81,7 @@ class PlayerManager extends EventEmitter {
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 }); view.setVisible(false);
     const url = `https://chzzk.naver.com/live/${channelId}`;
     const current = () => this.views.get(slotId) === view && !this.quitting;
-    contents.setAudioMuted(slotId !== this.audioSlot);
+    contents.setAudioMuted(true);
     contents.on('dom-ready', () => { if (!contents.isDestroyed()) contents.setZoomFactor(0.5); });
     this.shortcuts(contents, slotId);
     contents.setWindowOpenHandler(({ url: target }) => {
@@ -109,6 +131,7 @@ class PlayerManager extends EventEmitter {
     const view = this.views.get(slotId);
     // Revoke ownership before waiting: a late load must not reattach rewards.
     this.views.delete(slotId);
+    this.removeAudio(slotId);
     if (view && !view.webContents.isDestroyed()) view.webContents.setAudioMuted(true);
     try { await beforeDestroy(); }
     finally {
@@ -116,8 +139,7 @@ class PlayerManager extends EventEmitter {
         if (!this.window.isDestroyed()) this.window.contentView.removeChildView(view);
         if (!view.webContents.isDestroyed()) view.webContents.close();
       }
-      this.pages.delete(slotId);
-      if (this.audioSlot === slotId) this.audioSlot = null;
+      if (!this.views.has(slotId)) this.pages.delete(slotId);
       this.applyAudio();
     }
   }
@@ -147,6 +169,7 @@ class PlayerManager extends EventEmitter {
   destroyAll() {
     for (const view of this.views.values()) if (!view.webContents.isDestroyed()) view.webContents.close();
     this.views.clear();
+    this.enabledAudio.clear(); this.audioSlot = null;
   }
 }
 

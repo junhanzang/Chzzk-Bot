@@ -1,0 +1,29 @@
+.channel-discovery { display: grid; gap: 14px; min-width: 0; }
+.channel-discovery [hidden] { display: none !important; }
+.channel-discovery h2 { font-size: 13px; margin: 0 0 8px; }
+.discovery-note { margin: 7px 0; color: #9faeae; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.following-disclosure { border: 1px solid #35463e; border-radius: 9px; background: #17221d; min-width: 0; }
+.following-disclosure > summary { padding: 11px; cursor: pointer; color: #dcece2; font-size: 13px; font-weight: 600; }
+.following-content { padding: 0 10px 10px; }
+.following-tools { display: flex; gap: 6px; align-items: center; }
+.following-tools input { width: 0; min-width: 0; flex: 1; margin: 0; }
+.following-list, .pinned-list { display: grid; gap: 6px; max-height: 300px; overflow-y: auto; scrollbar-width: thin; }
+.following-row, .pinned-row { display: flex; align-items: center; gap: 6px; border: 1px solid #30453a; border-radius: 6px; padding: 8px; min-width: 0; background: #1c2b23; }
+.following-info { flex: 1; min-width: 0; display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+.discovery-name { min-width: 0; flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e2eee5; }
+.following-title { flex-basis: 100%; color: #9aac9e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.following-live, .following-offline { font-size: 10px; color: #91e9b4; }
+.following-offline { color: #8c9e94; }
+.discovery-button { cursor: pointer; border: 1px solid #496153; border-radius: 5px; padding: 6px; min-height: 30px; color: #cfe9d8; background: #253c2e; font: inherit; font-size: 11px; white-space: nowrap; }
+.discovery-button:hover:not(:disabled), .discovery-button[aria-pressed="true"] { background: #355640; border-color: #83c297; }
+.discovery-button:disabled { cursor: default; opacity: .55; }
+.discovery-button:focus-visible, .following-disclosure summary:focus-visible { outline: 2px solid #9ae4ba; outline-offset: 2px; }
+.sidebar { overflow-y: auto; }
+.sidebar .channels-list { flex-shrink: 0; max-height: 35vh; overflow-y: auto; }
+.sidebar .channel-discovery { margin: 12px 0; flex-shrink: 0; }
+.sidebar .following-list { max-height: 280px; }
+.sidebar .sidebar-bottom { position: static; }
+.chat-popout-button { font-size: 12px; }
+.player-footer > .chat-popout-button { margin: 0 0 8px; }
+.slot-actions { flex-wrap: wrap; }
+.slot-actions > .chat-popout-button { flex-basis: 100%; }

@@ -1,7 +1,13 @@
+import { normalWindow } from './normal-window.js';
+
 /** Owns managed-tab records, adoption, audio selection and the tab portion of the browser session. */
 export class ManagedTabs {
   #slots;
   #audioSlot = null;
+  #audioSlots = new Set();
+  #audioEpochs;
+  #soloEpoch = 0;
+  #audioWrites = new Map();
 
   constructor({ chromeApi, model, storage, onOwnershipChange = async () => {} }) {
     this.chrome = chromeApi;
@@ -9,9 +15,11 @@ export class ManagedTabs {
     this.storage = storage;
     this.onOwnershipChange = onOwnershipChange;
     this.#slots = model.SLOT_IDS.map(() => null);
+    this.#audioEpochs = model.SLOT_IDS.map(() => 0);
   }
 
   restore(saved = {}) {
+    this.#soloEpoch++;
     this.#slots = this.model.SLOT_IDS.map(slotId => {
       const value = saved.slots?.[slotId];
       if (!value) return null;
@@ -21,8 +29,24 @@ export class ManagedTabs {
           createdByDesk: value.createdByDesk !== false, previousMuted: value.previousMuted === true };
       } catch { return null; }
     });
-    this.#audioSlot = this.model.SLOT_IDS.includes(saved.audioSlot) ? saved.audioSlot : null;
+    const selected = Array.isArray(saved.audioSlots) ? saved.audioSlots : [saved.audioSlot];
+    this.#audioSlots = new Set(selected.filter(slotId => this.model.SLOT_IDS.includes(slotId) && Number.isInteger(this.#slots[slotId]?.tabId)));
+    this.#audioSlot = this.#audioSlots.has(saved.audioSlot) ? saved.audioSlot : [...this.#audioSlots].at(-1) ?? null;
   }
+
+  get audioSlots() { return this.model.SLOT_IDS.filter(slotId => this.#audioSlots.has(slotId)); }
+  get audioSlot() { return this.#audioSlot; }
+
+  commitAudio(slotId, enabled) {
+    if (enabled) {
+      this.#audioSlots.delete(slotId); this.#audioSlots.add(slotId); this.#audioSlot = slotId;
+    } else {
+      this.#audioSlots.delete(slotId);
+      if (this.#audioSlot === slotId) this.#audioSlot = [...this.#audioSlots].at(-1) ?? null;
+    }
+  }
+
+  removeAudio(slotId) { this.#audioEpochs[slotId]++; this.commitAudio(slotId, false); }
 
   records() { return this.#slots.map(slot => slot ? { ...slot } : null); }
   slot(slotId) { const slot = this.#slots[slotId]; return slot ? { ...slot } : null; }
@@ -32,7 +56,7 @@ export class ManagedTabs {
   contains(tabId) { return this.#slots.some(slot => slot?.tabId === tabId); }
   slotsForChannel(id) { return this.model.SLOT_IDS.filter(slotId => this.#slots[slotId]?.channelId === id); }
   firstEmpty() { return this.#slots.findIndex(slot => !slot?.channelId); }
-  persist() { return this.storage.updateSession({ slots: this.records(), audioSlot: this.#audioSlot }); }
+  persist() { return this.storage.updateSession({ slots: this.records(), audioSlot: this.#audioSlot, audioSlots: [...this.#audioSlots] }); }
 
   matches(tab, channelId) {
     if (!tab || tab.incognito) return false;
@@ -55,7 +79,7 @@ export class ManagedTabs {
     if (this.#slots[slotId] === record && record.tabId === tabId) {
       record.tabId = null;
       record.pageStatus = 'detached';
-      if (this.#audioSlot === slotId) this.#audioSlot = null;
+      this.removeAudio(slotId);
     }
     return null;
   }
@@ -71,7 +95,12 @@ export class ManagedTabs {
   async inspect() {
     for (const slotId of this.model.SLOT_IDS) {
       const tab = await this.getTab(slotId);
-      if (tab) this.#slots[slotId].pageStatus = tab.status === 'loading' ? 'loading' : 'ready';
+      if (tab) {
+        this.#slots[slotId].pageStatus = tab.status === 'loading' ? 'loading' : 'ready';
+        // Service-worker restoration observes existing tab state; it must never
+        // unmute a tab just because an old session said it was selected.
+        if (tab.mutedInfo?.muted === true && this.#audioSlots.has(slotId)) this.removeAudio(slotId);
+      }
     }
     await this.persist();
   }
@@ -100,8 +129,8 @@ export class ManagedTabs {
     for (const slotId of this.model.SLOT_IDS) {
       if (!next[slotId]) take(slotId, remaining.find(record => record === previous[slotId]) || remaining[0]);
     }
+    for (const slotId of this.model.SLOT_IDS) if (next[slotId] !== previous[slotId]) this.removeAudio(slotId);
     this.#slots = next;
-    if (this.#audioSlot !== null && next[this.#audioSlot] !== previous[this.#audioSlot]) this.#audioSlot = null;
     await this.persist();
     for (const slotId of this.model.SLOT_IDS) {
       if (!next[slotId] || next[slotId] === previous[slotId]) continue;
@@ -115,6 +144,10 @@ export class ManagedTabs {
   }
 
   async open(slotId, channel) {
+    this.model.validSlot(slotId);
+    // Invalidate older requests, but retain the audible state if opening fails
+    // before Chrome has actually muted/replaced the previous managed tab.
+    this.#audioEpochs[slotId]++;
     const channelId = channel.id;
     const old = await this.getTab(slotId), oldSlot = this.#slots[slotId];
     let tab, createdByDesk = oldSlot?.createdByDesk !== false, previousMuted = oldSlot?.previousMuted === true;
@@ -130,9 +163,9 @@ export class ManagedTabs {
       tab = await this.chrome.tabs.update(old.id, { muted: true, active: true,
         ...(oldSlot.channelId === channelId ? {} : { url: `https://chzzk.naver.com/live/${channelId}` }) });
     } else {
+      const window = await normalWindow(this.chrome);
+      if (!window) throw new Error('일반 Chrome 창에서 방송을 열어 주세요.');
       if (old) await this.release(slotId);
-      const window = await this.chrome.windows.getLastFocused();
-      if (window.incognito) throw new Error('일반 Chrome 창에서 방송을 열어 주세요.');
       tab = await this.chrome.tabs.create({ url: 'about:blank', active: false, windowId: window.id });
       try { tab = await this.chrome.tabs.update(tab.id, { muted: true, url: `https://chzzk.naver.com/live/${channelId}`, active: true }); }
       catch (error) {
@@ -144,20 +177,22 @@ export class ManagedTabs {
     }
     this.#slots[slotId] = { channelId, tabId: tab.id, title: channel.name, createdByDesk, previousMuted,
       pageStatus: tab.status === 'complete' ? 'ready' : 'loading' };
-    if (this.#audioSlot === slotId) this.#audioSlot = null;
+    this.removeAudio(slotId);
     await this.persist();
     await this.chrome.windows.update(tab.windowId, { focused: true });
     await this.onOwnershipChange(tab.id);
   }
 
   async release(slotId, { closeOwned = true } = {}) {
-    const tab = await this.getTab(slotId), record = this.#slots[slotId];
+    this.model.validSlot(slotId);
+    const record = this.#slots[slotId], tab = await this.getTab(slotId);
+    if (this.#slots[slotId] !== record) return;
+    this.#audioEpochs[slotId]++;
     if (tab) {
       if (record.createdByDesk !== false && closeOwned) await this.chrome.tabs.remove(tab.id);
       else await this.chrome.tabs.update(tab.id, { muted: record.createdByDesk !== false ? true : record.previousMuted === true });
     }
-    this.#slots[slotId] = null;
-    if (this.#audioSlot === slotId) this.#audioSlot = null;
+    if (this.#slots[slotId] === record) { this.#slots[slotId] = null; this.removeAudio(slotId); }
     await this.persist();
     if (tab) await this.onOwnershipChange(tab.id);
   }
@@ -177,14 +212,72 @@ export class ManagedTabs {
     return true;
   }
 
+  async repairAudio(tabId) {
+    const slotId = this.#slots.findIndex(record => record?.tabId === tabId);
+    if (slotId === -1) return;
+    const record = this.#slots[slotId], tab = await this.getTab(slotId);
+    if (!tab || this.#slots[slotId] !== record || tab.id !== tabId) return;
+    await this.chrome.tabs.update(tab.id, { muted: !this.#audioSlots.has(slotId) });
+  }
+
+  async audioWrite(tabId, action) {
+    // Per-tab ordering keeps late Chrome update acknowledgements from reversing
+    // a newer toggle. Different broadcasts still change independently.
+    const previous = this.#audioWrites.get(tabId) || Promise.resolve();
+    const operation = previous.catch(() => {}).then(action);
+    this.#audioWrites.set(tabId, operation);
+    try { return await operation; }
+    finally { if (this.#audioWrites.get(tabId) === operation) this.#audioWrites.delete(tabId); }
+  }
+
+  async setAudioEnabled({ slotId, enabled } = {}) {
+    this.model.validSlot(slotId);
+    if (typeof enabled !== 'boolean') throw new Error('소리 설정이 올바르지 않습니다.');
+    const epoch = ++this.#audioEpochs[slotId], solo = this.#soloEpoch, record = this.#slots[slotId];
+    const current = () => this.#audioEpochs[slotId] === epoch && this.#soloEpoch === solo && this.#slots[slotId] === record;
+    const tab = await this.getTab(slotId);
+    if (!current()) return false;
+    if (!tab) {
+      if (enabled) throw new Error('방송 탭을 먼저 열어 주세요.');
+      this.commitAudio(slotId, false); await this.persist(); return true;
+    }
+    try {
+      return await this.audioWrite(tab.id, async () => {
+        if (!current()) return false;
+        await this.chrome.tabs.update(tab.id, { muted: !enabled });
+        if (!current()) { await this.repairAudio(tab.id); return false; }
+        this.commitAudio(slotId, enabled); return true;
+      });
+    } finally { await this.persist(); }
+  }
+
   async selectAudio(slotId) {
+    if (slotId !== null) this.model.validSlot(slotId);
+    const solo = ++this.#soloEpoch;
+    const epochs = this.#audioEpochs.map(epoch => epoch + 1); this.#audioEpochs = [...epochs];
+    const records = [...this.#slots];
+    const current = id => this.#soloEpoch === solo && this.#audioEpochs[id] === epochs[id] && this.#slots[id] === records[id];
     const selected = slotId === null ? null : await this.getTab(slotId);
+    if (this.#soloEpoch !== solo || (slotId !== null && !current(slotId))) return false;
     if (slotId !== null && !selected) throw new Error('방송 탭을 먼저 열어 주세요.');
-    const tabs = await this.targets();
-    for (const { tab } of tabs) await this.chrome.tabs.update(tab.id, { muted: true });
-    if (selected) await this.chrome.tabs.update(selected.id, { muted: false });
-    this.#audioSlot = slotId;
-    await this.persist();
+    try {
+      // Mute first so a solo shortcut never temporarily adds another source.
+      const order = this.model.SLOT_IDS.filter(id => id !== slotId);
+      if (slotId !== null) order.push(slotId);
+      for (const id of order) {
+        if (!current(id)) continue;
+        const tab = id === slotId ? selected : await this.getTab(id);
+        if (!current(id)) continue;
+        if (!tab) { this.commitAudio(id, false); continue; }
+        await this.audioWrite(tab.id, async () => {
+          if (!current(id)) return;
+          await this.chrome.tabs.update(tab.id, { muted: id !== slotId });
+          if (!current(id)) { await this.repairAudio(tab.id); return; }
+          this.commitAudio(id, id === slotId);
+        });
+      }
+      return true;
+    } finally { await this.persist(); }
   }
 
   async targets() {
@@ -199,7 +292,8 @@ export class ManagedTabs {
         return { slotId, channelId, title: channels.find(item => item.id === channelId)?.name || local?.title || '',
           ...(ownsTab ? { tabId: local.tabId } : {}), pageStatus: !channelId ? 'empty' : ownsTab ? local.pageStatus : 'detached' };
       }),
-      audioSlot: this.#audioSlot !== null && this.channelId(this.#audioSlot) === assignments[this.#audioSlot] ? this.#audioSlot : null
+      audioSlots: this.audioSlots.filter(slotId => this.channelId(slotId) === assignments[slotId] && Number.isInteger(this.#slots[slotId]?.tabId)),
+      audioSlot: this.#audioSlot !== null && this.channelId(this.#audioSlot) === assignments[this.#audioSlot] && Number.isInteger(this.#slots[this.#audioSlot]?.tabId) ? this.#audioSlot : null
     };
   }
 }

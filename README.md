@@ -4,6 +4,8 @@
 
 **시청은 Chrome 패널, 클립·봇 관리는 `start-desk.cmd` 앱에서 시작하세요.** 앱의 봇 화면에서 문장 미리보기·실시간 실행·승인·중지를 조작하고, 설정에서 Ollama 또는 외부 AI를 선택합니다. 기존 터미널 봇은 `start-bot.cmd`로 계속 사용할 수 있습니다. [처음 사용하기·20개 상황 평가·문장 리플레이](docs/BOT.md) · [봇 모듈 구조](docs/BOT_ARCHITECTURE.md)
 
+앱과 Chrome에서 **팔로잉 자동 조회·즐겨찾기 고정·여러 방송 소리 동시 재생·채팅 새 창**을 지원합니다. [0.7.0 사용 방법과 확인 범위](docs/releases/0.7.0.md)
+
 ```powershell
 python main.py --demo                  # 장치·모델·계정 없이 동작 확인
 python main.py --setup                 # 처음 한 번 설정 저장

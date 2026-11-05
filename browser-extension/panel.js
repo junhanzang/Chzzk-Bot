@@ -8,11 +8,13 @@ import { createWatchToolsView } from './ui/watch-tools.mjs';
 import { createSectionNavigation } from './shared/ui/navigation.mjs';
 import { createBotView } from './shared/ui/bot-view.mjs';
 import { createPanelNavigationView } from './ui/navigation.mjs';
+import { createChannelDiscovery } from './shared/ui/channel-discovery.mjs';
 
 const notice = createNoticeView({ document });
 const controller = createPanelController({ document, timers: window, sendMessage: message => chrome.runtime.sendMessage(message), onNotice: notice.show });
 const navigation = createSectionNavigation({ document });
 const views = [
+  createChannelDiscovery({ document, root: document.querySelector('#channel-discovery'), run: controller.execute }),
   createBotView({ document, root: document.querySelector('#bot-workspace'), run: controller.execute }),
   createPanelNavigationView({ document, run: controller.execute }),
   createConnectionView({ document, run: controller.execute, notify: notice.show }),

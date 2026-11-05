@@ -22,6 +22,9 @@
 | `lib/player-manager.cjs` | 네이티브 플레이어 소유권·페이지 상태·소리·크기·통나무 연결 수명 | 프로필 파일, 녹화 구현 |
 | `lib/recording-service.cjs` | 방송 재생 정보, 미디어 중계 주소 수명, 녹화 준비·저장 상태·종료 | UI, 즐겨찾기·배치 설정 변경 |
 | `lib/auth-session.cjs` | 로그인 창 수명, 허용된 이동, 로그인 상태 조회·중복 요청·취소 | 녹화·플레이어 직접 제어 |
+| `../browser-extension/shared/following.js`, `lib/following-session.cjs` | 고정 팔로잉 API의 페이지·응답 제한·취소, 앱 로그인 수명 연결 | 쿠키 추출, 자동 즐겨찾기 저장, UI DOM |
+| `../browser-extension/shared/chat-popup.js`, 양쪽 `lib/chat-windows.*` | 공식 채팅 경로 검증, 채널별 창 재사용·로그인 연결 | 관리 영상 탭의 소리·녹화 변경 |
+| `../browser-extension/shared/ui/channel-discovery.mjs` | 팔로잉 검색·표시, 명시적 고정, Chrome 고정 목록 | 계정 API·저장소 직접 접근 |
 | `lib/profile-store.cjs` | 고정된 설정·클립 문서 읽기, 스냅샷 순차 저장, 임시 파일 교체 | Electron 창, 사용자 화면 상태 |
 | `lib/replay-buffer.cjs` | 녹화 세션·세대, recorder 프로세스·중단, 수동/범위 저장 조합 | UI, 앱 설정 변경 |
 | `lib/segment-store.cjs` | 완료 manifest·파일, 시간·용량 제한, 연속 구간 선택·스냅샷 | UI, 채팅, MP4 프로세스 |

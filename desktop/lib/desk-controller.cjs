@@ -23,10 +23,11 @@ const COMMANDS = Object.freeze(['getState', 'refreshAuth', 'login', 'setClipSeco
   'addChannel', 'removeChannel', 'assignSlot', 'clearSlot', 'selectAudio', 'setBuffer', 'saveClip', 'reloadSlot',
   'openExternal', 'openClip', 'showClipsFolder', 'setPlayerBounds', 'renameChannel', 'setChannelPinned',
   'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers', 'queryClips', 'updateClip', 'showClipInFolder',
-  'getBotState', 'configureBot', 'previewBot', 'startBot', 'stopBot', 'approveBot']);
+  'getBotState', 'configureBot', 'previewBot', 'startBot', 'stopBot', 'approveBot',
+  'setAudioEnabled', 'openChat', 'refreshFollowing', 'pinFollowedChannel']);
 
 class DeskController extends EventEmitter {
-  constructor({ profile, store, players, recordings, auth, version, browserAvailable, openExternal, openPath, revealPath, bot }) {
+  constructor({ profile, store, players, recordings, auth, version, browserAvailable, openExternal, openPath, revealPath, bot, following, chatWindows }) {
     super();
     this.settings = profile.settings;
     this.clips = profile.clips;
@@ -36,6 +37,8 @@ class DeskController extends EventEmitter {
     this.players = players;
     this.recordings = recordings;
     this.auth = auth;
+    this.following = following;
+    this.chatWindows = chatWindows;
     this.bot = bot;
     bot?.on('change', () => this.publish());
     this.version = version;
@@ -84,6 +87,7 @@ class DeskController extends EventEmitter {
     const clips = this.library.committedClips;
     return {
       version: this.version, channels: settings.channels, audioSlot: this.players.audioSlot, clips: clips.slice(0, 100),
+      audioSlots: this.players.audioSlots || [], following: this.following?.snapshot() || { status: 'idle', channels: [] },
       bot: this.bot?.snapshot() || unavailableBot('봇 제어 연결이 준비되지 않았어요.'),
       clipRevision: this.clipRevision, clipTotal: clips.length, watchPresets: settings.watchPresets, actionSummary: null,
       layout: settings.layout, mainSlot: settings.mainSlot, clipSeconds: settings.clipSeconds,
@@ -146,6 +150,14 @@ class DeskController extends EventEmitter {
 
   refreshAuth() { return this.auth.refresh(); }
   login() { return this.auth.open(); }
+  async refreshFollowing() { await this.following?.refresh(); return this.getState(); }
+  async pinFollowedChannel(input) {
+    const id = parseChannel(input);
+    const channel = this.following?.snapshot().channels.find(item => item.id === id);
+    if (!channel) throw new Error('팔로잉 목록을 새로고침한 뒤 다시 선택해 주세요.');
+    if (this.settings.channels.some(item => item.id === id)) return this.setChannelPinned({ channelId: id, pinned: true });
+    return this.addChannel({ input: id, name: channel.name, pinned: true, open: false });
+  }
   requireBot() { if (!this.bot || this.quitting) throw new Error('봇 제어 연결을 사용할 수 없습니다.'); return this.bot; }
   getBotState() { return this.requireBot().getState(); }
   configureBot(arg) { return this.requireBot().configure(arg); }
@@ -210,15 +222,16 @@ class DeskController extends EventEmitter {
     this.publish(); return this.getState();
   }
 
-  async addChannel({ input, name, playbackMode = 'desktop' } = {}) {
+  async addChannel({ input, name, playbackMode = 'desktop', pinned = false, open = true } = {}) {
+    if (typeof pinned !== 'boolean' || typeof open !== 'boolean') throw new Error('채널 추가 설정이 올바르지 않습니다.');
     if (!['desktop', 'browser'].includes(playbackMode)) throw new Error('올바른 시청 방식을 선택해 주세요.');
     const id = parseChannel(input);
     if (this.settings.channels.some(c => c.id === id)) throw new Error('이미 즐겨찾기에 있는 채널입니다. A–D 자리에 열어 주세요.');
     if (this.settings.channels.length >= 100) throw new Error('즐겨찾기는 최대 100개까지 저장할 수 있습니다.');
-    this.settings.channels.push({ id, name: cleanTitle(name, `채널 ${id.slice(0, 6)}`) });
+    this.settings.channels.push({ id, name: cleanTitle(name, `채널 ${id.slice(0, 6)}`), ...(pinned ? { pinned: true } : {}) });
     await this.persist();
     const empty = this.settings.slots.findIndex(value => !value);
-    if (empty !== -1) await this.assignSlot({ slotId: empty, channelId: id, playbackMode });
+    if (open && empty !== -1) await this.assignSlot({ slotId: empty, channelId: id, playbackMode });
     this.publish(); return this.getState();
   }
 
@@ -254,6 +267,15 @@ class DeskController extends EventEmitter {
 
   clearSlot(slotId) { return this.slotAction(slotId, async () => { await this.closeSlot(slotId); await this.persist(); return this.getState(); }); }
   selectAudio(slotId) { this.players.selectAudio(slotId); return this.getState(); }
+  setAudioEnabled(arg) { this.players.setAudioEnabled(arg); return this.getState(); }
+  async openChat(slotId) {
+    validSlot(slotId);
+    const id = this.settings.slots[slotId];
+    if (!id) throw new Error('채팅을 볼 방송을 먼저 선택해 주세요.');
+    if (!this.chatWindows) throw new Error('채팅 창을 준비하지 못했어요. 앱을 다시 열어 주세요.');
+    await this.chatWindows.open(id, this.settings.channels.find(channel => channel.id === id)?.name);
+    return this.getState();
+  }
 
   setBuffer({ slotId, enabled } = {}) {
     return this.slotAction(slotId, async () => {
@@ -312,6 +334,8 @@ class DeskController extends EventEmitter {
   beginShutdown() { this.quitting = true; this.autoClips.close(); this.players.beginShutdown(); this.recordings.beginShutdown(); }
   async shutdown() {
     this.autoClips.close();
+    this.following?.close();
+    this.chatWindows?.closeAll();
     await this.bot?.close();
     await this.recordings.shutdown();
     await this.store.flush().catch(() => {});

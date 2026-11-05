@@ -106,6 +106,8 @@ async function boot(savedSettings, { packaged = false } = {}) {
     './lib/open-local-path.cjs': { openLocalPath: async () => {} }, './lib/browser-bridge.cjs': { BrowserBridge: Bridge },
     './lib/browser-actions.cjs': { createBrowserHandlers }, './lib/rewards-host.cjs': { RewardsHost: Rewards },
     './lib/auth-session.cjs': { AuthSession, trustedRemote },
+    './lib/following-session.cjs': require('../lib/following-session.cjs'),
+    './lib/chat-windows.cjs': require('../lib/chat-windows.cjs'),
     './lib/profile-store.cjs': { ProfileStore: class extends ProfileStore { constructor(directory) { super(directory, { fileSystem: fileApi }); } } },
     './lib/player-manager.cjs': { PlayerManager }, './lib/recording-service.cjs': { RecordingService },
     './lib/auto-clip-service.cjs': { AutoClipService: class extends AutoClipService { constructor(options) { super({ ...options, intervalMs: 0 }); } } },
@@ -144,6 +146,19 @@ async function boot(savedSettings, { packaged = false } = {}) {
 
 const settings = modes => ({ channels: [{ id: channelA, name: 'A' }, { id: channelB, name: 'B' }],
   slots: [channelA, channelB], playbackModes: modes });
+
+test('controller supports multi-audio and pin-only additions without disturbing assigned streams', async () => {
+  const f = await boot(settings(['desktop', 'desktop']));
+  await f.invoke('setAudioEnabled', { slotId: 0, enabled: true });
+  let state = await f.invoke('setAudioEnabled', { slotId: 1, enabled: true });
+  assert.deepEqual(Array.from(state.audioSlots), [0, 1]); assert.equal(state.audioSlot, 1);
+  state = await f.invoke('setAudioEnabled', { slotId: 0, enabled: false });
+  assert.deepEqual(Array.from(state.audioSlots), [1]);
+  const added = await f.invoke('addChannel', { input: 'c'.repeat(32), name: '나중에 볼 방송', pinned: true, open: false });
+  assert.equal(added.channels[2].pinned, true); assert.equal(added.slots[2].channelId, null);
+  assert.equal(f.views.length, 2); assert.equal(f.starts.length, 0);
+  assert.equal((await f.invoke('refreshFollowing')).following.status, 'signed_out');
+});
 
 test('packaged startup uses the external FFmpeg executable without an ASAR spawn path', async () => {
   const f = await boot(settings(['browser', 'browser']), { packaged: true });

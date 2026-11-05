@@ -1,4 +1,5 @@
 import '../shared/channels.js';
+import '../shared/following.js';
 import { DesktopConnection, idleReplay, blankRemote, sanitizeClipPage } from './desktop-connection.js';
 import { DeskStorage } from './desk-storage.js';
 import { ManagedTabs } from './managed-tabs.js';
@@ -6,6 +7,7 @@ import { RewardService } from './reward-service.js';
 import { ChatService } from './chat-service.js';
 import { WindowLayout } from './window-layout.js';
 import { WatchWorkspace } from './watch-workspace.js';
+import { ChatWindows } from './chat-windows.js';
 
 export { parsePairCode } from './desktop-connection.js';
 export { layoutBounds } from './window-layout.js';
@@ -13,7 +15,8 @@ export { layoutBounds } from './window-layout.js';
 const CLIP_METHODS = new Set(['setBuffer', 'saveClip', 'openClip', 'showClipsFolder', 'showClipInFolder', 'updateClip']);
 const BOT_METHODS = new Set(['getBotState', 'previewBot', 'startBot', 'stopBot', 'approveBot', 'openDeskSection']);
 const ALL_METHODS = new Set(['getState', 'pair', 'disconnect', 'addChannel', 'removeChannel', 'assignSlot', 'clearSlot',
-  'selectAudio', 'focusSlot', 'arrangeWindows', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings',
+  'selectAudio', 'setAudioEnabled', 'openChat', 'refreshFollowing', 'pinFollowedChannel',
+  'focusSlot', 'arrangeWindows', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings',
   'renameChannel', 'setChannelPinned', 'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers', 'queryClips', ...CLIP_METHODS, ...BOT_METHODS]);
 
 export function panelSenderAllowed(sender, chromeApi) {
@@ -25,6 +28,9 @@ export class DeskController {
   constructor({ chromeApi, model = globalThis.DeskChannels, fetchImpl = globalThis.fetch, timeoutMs = 5000, actionTimeoutMs = 65000 }) {
     this.model = model;
     this.fetchImpl = fetchImpl;
+    this.following = new globalThis.DeskFollowing.FollowingService({ fetchImpl: (...args) => this.fetchImpl(...args), timeoutMs });
+    this.followingRefreshAt = 0;
+    this.chatWindows = new ChatWindows({ chromeApi });
     this.storage = new DeskStorage({ chromeApi, model });
     this.desktop = new DesktopConnection({ model, storage: this.storage, timeoutMs, actionTimeoutMs,
       fetchImpl: (...args) => this.fetchImpl(...args) });
@@ -154,7 +160,7 @@ export class DeskController {
       channels, slots: view.slots.map(slot => ({ ...slot,
         playbackMode: linked ? base.slots[slot.slotId].playbackMode : 'browser',
         replay: linked ? base.slots[slot.slotId].replay : idleReplay() })),
-      audioSlot: view.audioSlot, clips: base.clips, savingSlots: base.savingSlots,
+      audioSlot: view.audioSlot, audioSlots: view.audioSlots, following: this.following.snapshot(), clips: base.clips, savingSlots: base.savingSlots,
       bot: linked && this.desktop.status.status === 'connected' ? base.bot : globalThis.DeskBotState.unavailableBot(),
       watchPresets: this.watch.presets, clipRevision: base.clipRevision, clipTotal: base.clipTotal, actionSummary: null,
       ffmpegAvailable: linked && this.desktop.status.status === 'connected' && base.ffmpegAvailable,
@@ -180,6 +186,7 @@ export class DeskController {
     }
     if (method === 'setAllBuffers') return this.setAllBuffers(arg);
     if (method === 'getState') {
+      this.refreshFollowingIfDue();
       if (this.desktop.paired) await this.refreshRemote().catch(() => {});
       await this.tabs.inspect();
       return this.snapshot();
@@ -203,7 +210,24 @@ export class DeskController {
       await this.tabs.persist();
       return this.snapshot();
     }
-    if (method === 'addChannel') {
+    if (method === 'refreshFollowing') {
+      this.followingRefreshAt = Date.now();
+      await this.following.refresh();
+    } else if (method === 'pinFollowedChannel') {
+      const id = this.model.parseChannel(arg);
+      const channel = this.following.snapshot().channels.find(item => item.id === id);
+      if (!channel) throw new Error('팔로잉 목록을 새로고침한 뒤 다시 선택해 주세요.');
+      if (this.channels().some(item => item.id === id)) {
+        if (this.desktop.paired) await this.linkedMutation('setChannelPinned', { channelId: id, pinned: true });
+        else await this.storage.changeChannel('setChannelPinned', { channelId: id, pinned: true });
+      } else if (this.desktop.paired) {
+        await this.linkedMutation('addChannel', { input: id, name: channel.name, pinned: true, open: false });
+      } else await this.storage.addChannel({ id, name: channel.name, pinned: true });
+    } else if (method === 'openChat') {
+      const slotId = this.model.validSlot(arg), channelId = this.assignments()[slotId];
+      if (!channelId) throw new Error('채팅을 볼 방송을 먼저 선택해 주세요.');
+      await this.chatWindows.open(channelId, this.channels().find(channel => channel.id === channelId)?.name);
+    } else if (method === 'addChannel') {
       const channelId = this.model.parseChannel(arg?.input), name = this.model.cleanTitle(arg?.name, `채널 ${channelId.slice(0, 6)}`);
       if (this.desktop.paired) {
         await this.linkedMutation('addChannel', { input: channelId, name });
@@ -258,6 +282,12 @@ export class DeskController {
         throw new Error('방송 배치가 달라졌어요. 들을 방송을 A–D 자리에 다시 지정해 주세요.');
       }
       await this.tabs.selectAudio(arg);
+    } else if (method === 'setAudioEnabled') {
+      const slotId = this.model.validSlot(arg?.slotId);
+      if (this.desktop.paired && this.tabs.channelId(slotId) !== this.desktop.remote.slots[slotId].channelId) {
+        throw new Error('방송 배치가 달라졌어요. 들을 방송을 A–D 자리에 다시 지정해 주세요.');
+      }
+      await this.tabs.setAudioEnabled(arg);
     } else if (method === 'setAutoRewards') {
       if (typeof arg !== 'boolean') throw new Error('잘못된 자동 수령 설정입니다.');
       await this.storage.updatePreferences({ autoRewards: arg });
@@ -331,7 +361,23 @@ export class DeskController {
       failures: [...failures, ...summary.failures].sort((a, b) => a.slotId - b.slotId) } };
   }
 
-  onTabChanged(tabId) { return this.enqueue(async () => { if (this.tabs.contains(tabId)) await this.tabs.inspect(); }); }
+  refreshFollowingIfDue() {
+    const status = this.following.snapshot().status;
+    const interval = status === 'signed_out' ? 15000 : 60000;
+    if (this.followingRefreshAt && Date.now() - this.followingRefreshAt < interval) return;
+    this.followingRefreshAt = Date.now();
+    void this.following.refresh();
+  }
+
+  onTabChanged(tabId, changeInfo, tab) {
+    const accountMayHaveChanged = changeInfo?.status === 'complete' && typeof tab?.url === 'string' && tab.url.startsWith('https://chzzk.naver.com/');
+    // Cancel immediately, even while a recording export holds the command queue.
+    if (accountMayHaveChanged) { this.following.clear(); this.followingRefreshAt = 0; }
+    return this.enqueue(async () => {
+      if (this.tabs.contains(tabId)) await this.tabs.inspect();
+      if (accountMayHaveChanged) this.refreshFollowingIfDue();
+    });
+  }
   recordNotice(error) {
     return this.enqueue(async () => { this.lastNotice = { message: error?.message || '요청을 처리하지 못했어요.', error: true, at: Date.now() }; });
   }
