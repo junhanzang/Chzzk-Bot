@@ -25,6 +25,11 @@
 | `../browser-extension/shared/following.js`, `lib/following-session.cjs` | 고정 팔로잉 API의 페이지·응답 제한·취소, 앱 로그인 수명 연결 | 쿠키 추출, 자동 즐겨찾기 저장, UI DOM |
 | `../browser-extension/shared/chat-popup.js`, 양쪽 `lib/chat-windows.*` | 공식 채팅 경로 검증, 채널별 창 재사용·로그인 연결 | 관리 영상 탭의 소리·녹화 변경 |
 | `../browser-extension/shared/ui/channel-discovery.mjs` | 팔로잉 검색·표시, 명시적 고정, Chrome 고정 목록 | 계정 API·저장소 직접 접근 |
+| `../browser-extension/shared/recommendations.js` | 최근 이용 감쇠·점수·이유·정렬, 채널별 중복 집계 제한, 기록 스냅샷·직렬 저장 | 네트워크, 채팅 내용·닉네임 |
+| `../browser-extension/shared/activity-observer.js` | 실제 영상 진행과 직접 채팅 입력 관찰, 숫자 delta만 배출 | 텍스트 읽기, 페이지 요청·채팅 전송 |
+| `lib/activity-host.cjs`, `../browser-extension/lib/activity-service.js` | 소유 문서·세대·순서·수량 검증, 초기화와 늦은 응답 차단 | 다른 탭 자동 수집, 임의 RPC |
+| `lib/recommendation-store.cjs`, `../browser-extension/lib/desk-storage.js` | 각 환경의 로컬 이용 기록 저장·복원 | 앱·Chrome 사이 개인 기록 전달 |
+| `lib/loopback-listener.cjs` | fetch 차단 포트를 피하는 제한된 로컬 포트 재선택 | 외부 인터페이스 바인딩 |
 | `lib/profile-store.cjs` | 고정된 설정·클립 문서 읽기, 스냅샷 순차 저장, 임시 파일 교체 | Electron 창, 사용자 화면 상태 |
 | `lib/replay-buffer.cjs` | 녹화 세션·세대, recorder 프로세스·중단, 수동/범위 저장 조합 | UI, 앱 설정 변경 |
 | `lib/segment-store.cjs` | 완료 manifest·파일, 시간·용량 제한, 연속 구간 선택·스냅샷 | UI, 채팅, MP4 프로세스 |

@@ -7,7 +7,7 @@ const { chatPopupUrl, chatPopupChannelId } = require('../../browser-extension/sh
 const A = 'a'.repeat(32), B = 'b'.repeat(32);
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture({ load } = {}) {
+function fixture({ load, activity } = {}) {
   const windows = [], notices = [], logins = [];
   class Window extends EventEmitter {
     constructor(options) {
@@ -26,7 +26,7 @@ function fixture({ load } = {}) {
     loadURL(url) { this.urls.push(url); return load ? load(this) : Promise.resolve(); }
   }
   const service = new ChatWindows({ BrowserWindow: Window, partition: 'persist:same-app-session',
-    onNotice: (...args) => notices.push(args), onLogin: () => logins.push(true) });
+    onNotice: (...args) => notices.push(args), onLogin: () => logins.push(true), activity });
   return { service, windows, notices, logins };
 }
 
@@ -128,4 +128,37 @@ test('desktop shutdown destroys windows and suppresses pending login, readiness 
   assert.equal(win.destroyed, true); assert.equal(win.shows, 0); assert.equal(win.urls.length, 1);
   assert.deepEqual(f.logins, []); assert.deepEqual(f.notices, []);
   await assert.rejects(f.service.open(A), /종료/);
+});
+
+test('late activity lifecycle events from an old popup cannot detach its same-channel replacement', async () => {
+  const attached = [], detached = [], f = fixture({ activity: {
+    attach: (...args) => attached.push(args), detach: key => detached.push(key)
+  } });
+  await f.service.open(A); const old = f.windows[0]; old.webContents.emit('did-finish-load');
+  old.destroyed = true; // Destruction can be observable before the closed callback arrives.
+  await f.service.open(A); const replacement = f.windows[1]; replacement.webContents.emit('did-finish-load');
+  old.webContents.emit('did-start-navigation', {}, urlFor(B), false, true);
+  old.webContents.emit('render-process-gone'); old.emit('closed'); old.webContents.emit('did-finish-load');
+  assert.equal(attached.length, 2); assert.equal(attached[1][1], replacement.webContents); assert.deepEqual(detached, []);
+  replacement.webContents.emit('did-start-navigation', {}, urlFor(A), false, true);
+  assert.deepEqual(detached, [`chat:${A}`]);
+  function urlFor(id) { return chatPopupUrl(id); }
+});
+
+test('load failure detaches owned activity before removing the window map entry', async () => {
+  const detached = [], ownership = [], f = fixture({ activity: { detach(key) {
+    detached.push(key); ownership.push(f.service.windows.has(A));
+  } } });
+  await f.service.open(A); const win = f.windows[0];
+  f.service.failWindow(win, A, new Error('offline'));
+  assert.deepEqual(detached, [`chat:${A}`]); assert.deepEqual(ownership, [true]);
+  assert.equal(win.destroyed, true); assert.equal(f.service.windows.has(A), false);
+});
+
+test('closeAll detaches each owned activity before map clear and closed callbacks do not detach twice', async () => {
+  const detached = [], f = fixture({ activity: { detach: key => detached.push(key) } });
+  await f.service.open(A); await f.service.open(B); f.service.closeAll();
+  assert.deepEqual(detached, [`chat:${A}`, `chat:${B}`]);
+  assert.equal(f.service.windows.size, 0); assert.equal(f.windows.every(win => win.destroyed), true);
+  f.windows[0].webContents.emit('render-process-gone'); assert.equal(detached.length, 2);
 });

@@ -9,11 +9,12 @@ export class ManagedTabs {
   #soloEpoch = 0;
   #audioWrites = new Map();
 
-  constructor({ chromeApi, model, storage, onOwnershipChange = async () => {} }) {
+  constructor({ chromeApi, model, storage, onOwnershipChange = async () => {}, onVisit = () => {} }) {
     this.chrome = chromeApi;
     this.model = model;
     this.storage = storage;
     this.onOwnershipChange = onOwnershipChange;
+    this.onVisit = onVisit;
     this.#slots = model.SLOT_IDS.map(() => null);
     this.#audioEpochs = model.SLOT_IDS.map(() => 0);
   }
@@ -181,6 +182,7 @@ export class ManagedTabs {
     await this.persist();
     await this.chrome.windows.update(tab.windowId, { focused: true });
     await this.onOwnershipChange(tab.id);
+    this.onVisit(channelId);
   }
 
   async release(slotId, { closeOwned = true } = {}) {
@@ -209,6 +211,7 @@ export class ManagedTabs {
     if (!tab) return false;
     await this.chrome.tabs.update(tab.id, { active: true });
     await this.chrome.windows.update(tab.windowId, { focused: true });
+    this.onVisit(this.channelId(slotId));
     return true;
   }
 

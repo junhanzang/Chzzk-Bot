@@ -2,14 +2,17 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { FollowingService, parseFollowingPage, ENDPOINT, PAGE_SIZE, MAX_PAGES } = require('../shared/following.js');
+const { FollowingService, parseFollowingPage, parseFollowingCategories, ENDPOINT, CATEGORY_ENDPOINT, PAGE_SIZE, MAX_PAGES, MAX_CATEGORIES } = require('../shared/following.js');
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const id = n => n.toString(16).padStart(32, '0');
 const row = (n, live = false) => ({ channelId: id(n), channel: { channelId: id(n), channelName: `채널 ${n}` }, streamer: { openLive: live }, liveInfo: live ? { liveTitle: `방송 ${n}` } : null });
 const body = (rows = [], totalPage = 1) => ({ code: 200, content: { followingList: rows, totalPage } });
 const response = (data = body(), status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
-const create = (fetchImpl, options = {}) => new FollowingService({ fetchImpl, ...options });
+const categoryBody = (rows = []) => ({ code: 200, content: { followingList: rows } });
+const categoryRow = (id = 'League_of_Legends', type = 'GAME', name = '리그 오브 레전드') => ({ categoryId: id, categoryType: type, categoryValue: name });
+const create = (fetchImpl, { categoryFetch = async () => response(categoryBody()), ...options } = {}) => new FollowingService({
+  fetchImpl: (url, args) => url === CATEGORY_ENDPOINT ? categoryFetch(url, args) : fetchImpl(url, args), ...options });
 
 test('following rows normalize only display fields with both known channel ID locations', () => {
   const first = row(1, true); first.channel.channelName = '\n 한글\u0000 채널 '; first.liveInfo.liveTitle = ' 제목\n ';
@@ -31,7 +34,7 @@ test('all pages publish atomically, deduplicate channels and use a fixed credent
   const state = await pending;
   assert.equal(state.status, 'ready'); assert.equal(state.updatedAt, 123);
   assert.deepEqual(state.channels.map(channel => channel.id), [id(1), id(2), id(3)]);
-  assert.deepEqual(changes.map(change => change.status), ['loading', 'ready']);
+  assert.deepEqual(changes.map(change => change.status).filter((status, index, values) => !index || values[index - 1] !== status), ['loading', 'ready']);
   for (const [page, call] of calls.entries()) {
     assert.equal(call.url, `${ENDPOINT}?page=${page}&size=${PAGE_SIZE}&sortType=FOLLOW`);
     assert.equal(call.options.method, 'GET'); assert.equal(call.options.credentials, 'include');
@@ -118,10 +121,99 @@ test('an ignored abort still times out and close prevents late publishing or fut
   service.close(); const count = changes.length; await service.refresh(); assert.equal(calls, 1); assert.equal(changes.length, count);
   const gate = deferred(), lateChanges = [], late = create(() => gate.promise, { onChange: state => lateChanges.push(state) });
   const active = late.refresh(); await tick(); late.close(); gate.resolve(response(body([row(1)]))); await active; await tick();
-  assert.deepEqual(late.snapshot().channels, []); assert.deepEqual(lateChanges.map(state => state.status), ['loading']);
+  assert.deepEqual(late.snapshot().channels, []); assert(lateChanges.every(state => state.status === 'loading'));
 });
 
 test('observer errors cannot strand request state or block future refreshes', async t => {
   const service = create(async () => response(body([row(1)])), { onChange: () => { throw new Error('observer'); } }); t.after(() => service.close());
   assert.equal((await service.refresh()).status, 'ready'); assert.equal((await service.refresh()).status, 'ready');
+});
+
+test('followed category identities preserve ID case and distinguish types, not display names', () => {
+  const rows = [categoryRow('Same_Id', 'game', ' 같은 이름\n'), categoryRow('Same_Id', 'GAME', '같은 이름'),
+    categoryRow('Same_Id', 'sports', '같은 이름'), categoryRow('same_id', 'game', '같은 이름')];
+  rows[0].privateUser = 'never-copy';
+  assert.deepEqual(parseFollowingCategories(categoryBody(rows)), [
+    { id: 'Same_Id', type: 'GAME', name: '같은 이름' }, { id: 'Same_Id', type: 'SPORTS', name: '같은 이름' }, { id: 'same_id', type: 'GAME', name: '같은 이름' }
+  ]);
+  assert.deepEqual(parseFollowingCategories(categoryBody()), []);
+});
+
+test('optional live category metadata matches followed categories and invalid metadata does not remove a channel', () => {
+  const live = row(1, true); Object.assign(live.liveInfo, { liveCategory: 'League_of_Legends', categoryType: 'game', liveCategoryValue: '리그 오브 레전드' });
+  const offline = row(2); offline.liveInfo = live.liveInfo;
+  const missing = row(3, true), invalid = row(4, true); Object.assign(invalid.liveInfo, { liveCategory: '../../private', categoryType: 'GAME', liveCategoryValue: 'bad' });
+  const parsed = parseFollowingPage(body([live, offline, missing, invalid]), 0).channels;
+  assert.deepEqual(parsed[0].category, parseFollowingCategories(categoryBody([categoryRow()]))[0]);
+  assert(parsed.slice(1).every(channel => !Object.hasOwn(channel, 'category')));
+  assert.equal(parsed.length, 4);
+});
+
+test('category schema is bounded and malformed or newly paginated responses are rejected', () => {
+  for (const value of [null, {}, { code: 200, content: [] }, categoryBody([{}]), categoryBody([categoryRow('', 'GAME')]),
+    categoryBody([categoryRow('game', '', 'label')]), categoryBody([categoryRow('game', 'GAME', '')]),
+    categoryBody([categoryRow('x'.repeat(201))]), categoryBody([categoryRow('ok', 'X'.repeat(33))]),
+    categoryBody([categoryRow('https://private.example')]), categoryBody(Array(MAX_CATEGORIES + 1).fill(categoryRow())),
+    { code: 200, content: { followingList: [], totalPage: 2 } }, { code: 200, content: { followingList: [], page: { next: 'cursor' } } }]) {
+    assert.throws(() => parseFollowingCategories(value));
+  }
+});
+
+test('category and channel requests run independently and only use their fixed GET endpoints', async t => {
+  const gate = deferred(), calls = [], changes = [];
+  const service = new FollowingService({ clock: () => 321, onChange: state => changes.push(state), fetchImpl: (url, options) => {
+    calls.push({ url, options }); return url === CATEGORY_ENDPOINT ? gate.promise : response(body([row(1)]));
+  } }); t.after(() => service.close());
+  const pending = service.refresh(); await tick();
+  assert.equal(calls.length, 2); assert.equal(service.snapshot().status, 'ready'); assert.equal(service.snapshot().categoryStatus, 'loading');
+  assert.equal(service.snapshot().channels.length, 1); assert.equal(service.refresh(), pending);
+  const request = calls.find(call => call.url === CATEGORY_ENDPOINT);
+  assert.equal(request.options.method, 'GET'); assert.equal(request.options.credentials, 'include'); assert.equal(request.options.redirect, 'error');
+  assert.equal(request.options.cache, 'no-store'); assert.deepEqual(request.options.headers, { Accept: 'application/json' });
+  gate.resolve(response(categoryBody([categoryRow()]))); const state = await pending;
+  assert.equal(state.categoryStatus, 'ready'); assert.equal(state.categoryUpdatedAt, 321); assert.equal(state.updatedAt, 321);
+  assert.equal(state.categories.length, 1); assert(changes.some(state => state.status === 'ready' && state.categoryStatus === 'loading'));
+  state.categories[0].name = 'changed'; assert.equal(service.snapshot().categories[0].name, '리그 오브 레전드');
+});
+
+test('category auth, transport, schema and size failures never erase a valid channel list or expose raw errors', async t => {
+  const fixtures = [async () => response({}, 401), async () => response({ code: 403 }), async () => response({}, 429),
+    async () => response({ code: 200, content: { followingList: [{ secret: 'never-display' }] } }),
+    async () => new Response(' '.repeat(1024 * 1024 + 1)), async () => { throw new Error('https://private.example/?token=never-display'); }];
+  for (const [index, categoryFetch] of fixtures.entries()) {
+    const service = create(async () => response(body([row(1)])), { categoryFetch }); t.after(() => service.close());
+    const state = await service.refresh(); assert.equal(state.status, 'ready'); assert.equal(state.channels[0].id, id(1));
+    assert.equal(state.categoryStatus, index < 2 ? 'signed_out' : 'error'); assert.deepEqual(state.categories, []);
+    assert.equal(state.categoryUpdatedAt, null); assert(!JSON.stringify(state).includes('never-display')); assert(!state.categoryMessage.includes('https://'));
+  }
+});
+
+test('a category timeout leaves channels available; a channel timeout leaves valid categories available', async t => {
+  for (const slowCategories of [true, false]) {
+    const never = () => new Promise(() => {});
+    const service = create(slowCategories ? async () => response(body([row(1)])) : never,
+      { timeoutMs: 5, categoryFetch: slowCategories ? never : async () => response(categoryBody([categoryRow()])) }); t.after(() => service.close());
+    const pending = service.refresh(); await new Promise(resolve => setTimeout(resolve, 20)); const state = await pending;
+    assert.equal(state.status, slowCategories ? 'ready' : 'error'); assert.equal(state.categoryStatus, slowCategories ? 'error' : 'ready');
+    assert.equal(state.channels.length, slowCategories ? 1 : 0); assert.equal(state.categories.length, slowCategories ? 0 : 1);
+  }
+});
+
+test('channel signout clears categories even when they resolved first', async t => {
+  const channel = deferred(), service = create(() => channel.promise, { categoryFetch: async () => response(categoryBody([categoryRow()])) }); t.after(() => service.close());
+  const pending = service.refresh(); await tick(); assert.equal(service.snapshot().categoryStatus, 'ready');
+  channel.resolve(response({}, 401)); const state = await pending;
+  assert.equal(state.status, 'signed_out'); assert.equal(state.categoryStatus, 'signed_out'); assert.deepEqual(state.categories, []);
+});
+
+test('clear and a new account cancel late category results, and nested metadata snapshots cannot mutate service state', async t => {
+  const first = deferred(); let calls = 0;
+  const live = row(1, true); Object.assign(live.liveInfo, { liveCategory: 'New_Game', categoryType: 'GAME', liveCategoryValue: '새 게임' });
+  const service = create(async () => response(body([live])), { categoryFetch: () => ++calls === 1 ? first.promise : response(categoryBody([categoryRow('New_Game', 'GAME', '새 게임')])) }); t.after(() => service.close());
+  const old = service.refresh(); await tick(); const cleared = service.clear('signed_out');
+  assert.equal(cleared.categoryStatus, 'signed_out'); assert.deepEqual(cleared.categories, []); assert.deepEqual(cleared.channels, []);
+  const state = await service.refresh(); state.channels[0].category.name = 'changed';
+  first.resolve(response(categoryBody([categoryRow('Old_Game')]))); await old; await tick();
+  assert.equal(service.snapshot().categories[0].id, 'New_Game'); assert.equal(service.snapshot().channels[0].category.name, '새 게임');
+  const next = service.refresh(); assert.equal(service.snapshot().categoryStatus, 'loading'); assert.deepEqual(service.snapshot().categories, []); await next;
 });

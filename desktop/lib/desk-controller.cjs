@@ -7,6 +7,7 @@ const { ClipLibrary, loadClipLibrary } = require('./clip-library.cjs');
 const { AutoClipService } = require('./auto-clip-service.cjs');
 const { WatchWorkspace } = require('./watch-workspace.cjs');
 const { unavailableBot } = require('../../browser-extension/shared/bot-state.js');
+const { MODES } = require('../../browser-extension/shared/recommendations.js');
 
 async function loadDeskProfile({ store, dataDir, preferredClipsDir }) {
   const stored = await store.load();
@@ -24,10 +25,10 @@ const COMMANDS = Object.freeze(['getState', 'refreshAuth', 'login', 'setClipSeco
   'openExternal', 'openClip', 'showClipsFolder', 'setPlayerBounds', 'renameChannel', 'setChannelPinned',
   'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers', 'queryClips', 'updateClip', 'showClipInFolder',
   'getBotState', 'configureBot', 'previewBot', 'startBot', 'stopBot', 'approveBot',
-  'setAudioEnabled', 'openChat', 'refreshFollowing', 'pinFollowedChannel']);
+  'setAudioEnabled', 'openChat', 'refreshFollowing', 'pinFollowedChannel', 'setRecommendationSort', 'clearRecommendationHistory']);
 
 class DeskController extends EventEmitter {
-  constructor({ profile, store, players, recordings, auth, version, browserAvailable, openExternal, openPath, revealPath, bot, following, chatWindows }) {
+  constructor({ profile, store, players, recordings, auth, version, browserAvailable, openExternal, openPath, revealPath, bot, following, chatWindows, history, activity, activityBudget }) {
     super();
     this.settings = profile.settings;
     this.clips = profile.clips;
@@ -39,6 +40,7 @@ class DeskController extends EventEmitter {
     this.auth = auth;
     this.following = following;
     this.chatWindows = chatWindows;
+    this.history = history; this.activity = activity; this.activityBudget = activityBudget;
     this.bot = bot;
     bot?.on('change', () => this.publish());
     this.version = version;
@@ -88,6 +90,7 @@ class DeskController extends EventEmitter {
     return {
       version: this.version, channels: settings.channels, audioSlot: this.players.audioSlot, clips: clips.slice(0, 100),
       audioSlots: this.players.audioSlots || [], following: this.following?.snapshot() || { status: 'idle', channels: [] },
+      recommendations: { mode: MODES.includes(settings.recommendationSort) ? settings.recommendationSort : 'recommended', history: this.history?.snapshot() || {} },
       bot: this.bot?.snapshot() || unavailableBot('봇 제어 연결이 준비되지 않았어요.'),
       clipRevision: this.clipRevision, clipTotal: clips.length, watchPresets: settings.watchPresets, actionSummary: null,
       layout: settings.layout, mainSlot: settings.mainSlot, clipSeconds: settings.clipSeconds,
@@ -130,7 +133,7 @@ class DeskController extends EventEmitter {
     this.settings.slots[slotId] = channelId;
     this.settings.playbackModes ||= SLOT_IDS.map(() => 'desktop');
     this.settings.playbackModes[slotId] = playbackMode;
-    if (playbackMode === 'desktop') this.players.open(slotId, channelId);
+    if (playbackMode === 'desktop') { this.players.open(slotId, channelId); this.history?.recordVisit(channelId); }
   }
 
   async closeSlot(slotId) {
@@ -150,6 +153,14 @@ class DeskController extends EventEmitter {
 
   refreshAuth() { return this.auth.refresh(); }
   login() { return this.auth.open(); }
+  async setRecommendationSort(mode) {
+    if (!MODES.includes(mode)) throw new Error('목록 정렬을 다시 선택해 주세요.');
+    this.settings.recommendationSort = mode; await this.persist(); this.publish(); return this.getState();
+  }
+  async clearRecommendationHistory() {
+    const restart = this.activity?.reset(); this.activityBudget?.reset(); this.history?.clear();
+    await this.history?.flush(); await restart; this.publish(); return this.getState();
+  }
   async refreshFollowing() { await this.following?.refresh(); return this.getState(); }
   async pinFollowedChannel(input) {
     const id = parseChannel(input);
@@ -334,6 +345,8 @@ class DeskController extends EventEmitter {
   beginShutdown() { this.quitting = true; this.autoClips.close(); this.players.beginShutdown(); this.recordings.beginShutdown(); }
   async shutdown() {
     this.autoClips.close();
+    this.activity?.close();
+    await this.history?.flush().catch(() => {});
     this.following?.close();
     this.chatWindows?.closeAll();
     await this.bot?.close();

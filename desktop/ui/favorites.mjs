@@ -1,6 +1,6 @@
 import { createDom, createEventScope, setText } from '../../browser-extension/shared/ui/dom.mjs';
 import { createChannelEditor } from '../../browser-extension/shared/ui/channel-editor.mjs';
-import { presentation, slotIds, letters, slotKey, getSlot as findSlot } from '../../browser-extension/shared/ui/model.mjs';
+import { presentation, slotIds, letters, slotKey, rankChannelList, getSlot as findSlot } from '../../browser-extension/shared/ui/model.mjs';
 
 export function createFavoritesView({ document, run, onFocusSlot, onHome = () => {} }) {
   const { $, element } = createDom(document);
@@ -53,7 +53,7 @@ export function createFavoritesView({ document, run, onFocusSlot, onHome = () =>
         button.disabled = current || pending.has(slotKey(slotId)) || busy;
       });
     }
-    const channels = presentation.filterChannels(state.channels, query);
+    const channels = rankChannelList(presentation.filterChannels(state.channels, query), state);
     $('#channel-count').textContent = presentation.resultCount(channels.length, state.channels.length, query);
     $('#channels-empty').hidden = state.channels.length > 0;
     $('#channels-no-results').hidden = !state.channels.length || channels.length > 0;

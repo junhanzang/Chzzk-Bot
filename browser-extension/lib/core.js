@@ -1,5 +1,6 @@
 import '../shared/channels.js';
 import '../shared/following.js';
+import '../shared/recommendations.js';
 import { DesktopConnection, idleReplay, blankRemote, sanitizeClipPage } from './desktop-connection.js';
 import { DeskStorage } from './desk-storage.js';
 import { ManagedTabs } from './managed-tabs.js';
@@ -8,6 +9,7 @@ import { ChatService } from './chat-service.js';
 import { WindowLayout } from './window-layout.js';
 import { WatchWorkspace } from './watch-workspace.js';
 import { ChatWindows } from './chat-windows.js';
+import { ActivityService } from './activity-service.js';
 
 export { parsePairCode } from './desktop-connection.js';
 export { layoutBounds } from './window-layout.js';
@@ -16,6 +18,7 @@ const CLIP_METHODS = new Set(['setBuffer', 'saveClip', 'openClip', 'showClipsFol
 const BOT_METHODS = new Set(['getBotState', 'previewBot', 'startBot', 'stopBot', 'approveBot', 'openDeskSection']);
 const ALL_METHODS = new Set(['getState', 'pair', 'disconnect', 'addChannel', 'removeChannel', 'assignSlot', 'clearSlot',
   'selectAudio', 'setAudioEnabled', 'openChat', 'refreshFollowing', 'pinFollowedChannel',
+  'setRecommendationSort', 'clearRecommendationHistory',
   'focusSlot', 'arrangeWindows', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings',
   'renameChannel', 'setChannelPinned', 'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers', 'queryClips', ...CLIP_METHODS, ...BOT_METHODS]);
 
@@ -30,12 +33,13 @@ export class DeskController {
     this.fetchImpl = fetchImpl;
     this.following = new globalThis.DeskFollowing.FollowingService({ fetchImpl: (...args) => this.fetchImpl(...args), timeoutMs });
     this.followingRefreshAt = 0;
-    this.chatWindows = new ChatWindows({ chromeApi });
     this.storage = new DeskStorage({ chromeApi, model });
+    this.chatWindows = new ChatWindows({ chromeApi, storage: this.storage });
+    this.history = new globalThis.DeskRecommendations.ActivityHistory({ persist: value => this.storage.saveHistory(value) });
     this.desktop = new DesktopConnection({ model, storage: this.storage, timeoutMs, actionTimeoutMs,
       fetchImpl: (...args) => this.fetchImpl(...args) });
-    this.tabs = new ManagedTabs({ chromeApi, model, storage: this.storage,
-      onOwnershipChange: async tabId => { this.rewards.forget(tabId);
+    this.tabs = new ManagedTabs({ chromeApi, model, storage: this.storage, onVisit: id => this.history.recordVisit(id),
+      onOwnershipChange: async tabId => { this.rewards.forget(tabId); this.activity?.forget(tabId);
         await Promise.all([this.rewards.notifyConfig(tabId), this.chat.notifyConfig(tabId)]); } });
     this.rewards = new RewardService({ chromeApi, model, timeoutMs, fetchImpl: (...args) => this.fetchImpl(...args),
       enabled: () => this.storage.preferences.autoRewards,
@@ -47,6 +51,11 @@ export class DeskController {
       readRemote: () => this.desktop.paired && this.desktop.status.status === 'connected' ? this.desktop.remote : null,
       submit: batch => this.desktop.request('submitChatBatch', batch) });
     this.chatRefreshAt = 0;
+    this.activity = new ActivityService({ chromeApi, history: this.history, resolveTab: async (tabId, popup) => {
+      if (popup) return this.chatWindows.resolveContext(tabId);
+      const context = await this.tabs.resolveContext(tabId);
+      return context && (!this.desktop.paired || this.desktop.remote.slots[context.slotId].channelId === context.channelId) ? context : null;
+    } });
     this.windows = new WindowLayout(chromeApi);
     this.watch = new WatchWorkspace({ model, storage: this.storage, desktop: this.desktop, tabs: this.tabs,
       linkedMutation: (method, arg) => this.linkedMutation(method, arg) });
@@ -60,6 +69,8 @@ export class DeskController {
     if (this.initializing) return this.initializing;
     this.initializing = (async () => {
       const saved = await this.storage.load();
+      this.history.restore(saved.history);
+      this.chatWindows.restore(saved.session);
       await this.desktop.restore(saved);
       this.tabs.restore(saved.session);
       this.windows.restore(saved.session);
@@ -134,6 +145,12 @@ export class DeskController {
     await this.initialize();
     return this.rewards.handleMessage(message, sender);
   }
+  async handleActivityMessage(message, sender) {
+    await this.initialize();
+    const result = await this.activity.handleMessage(message, sender);
+    if (message?.method === 'submit' && result?.accepted) await this.history.flush();
+    return result;
+  }
 
   async handleChatMessage(message, sender) {
     await this.initialize();
@@ -161,6 +178,7 @@ export class DeskController {
         playbackMode: linked ? base.slots[slot.slotId].playbackMode : 'browser',
         replay: linked ? base.slots[slot.slotId].replay : idleReplay() })),
       audioSlot: view.audioSlot, audioSlots: view.audioSlots, following: this.following.snapshot(), clips: base.clips, savingSlots: base.savingSlots,
+      recommendations: { mode: this.storage.preferences.recommendationSort || 'recommended', history: this.history.snapshot() },
       bot: linked && this.desktop.status.status === 'connected' ? base.bot : globalThis.DeskBotState.unavailableBot(),
       watchPresets: this.watch.presets, clipRevision: base.clipRevision, clipTotal: base.clipTotal, actionSummary: null,
       ffmpegAvailable: linked && this.desktop.status.status === 'connected' && base.ffmpegAvailable,
@@ -210,7 +228,12 @@ export class DeskController {
       await this.tabs.persist();
       return this.snapshot();
     }
-    if (method === 'refreshFollowing') {
+    if (method === 'setRecommendationSort') {
+      if (!globalThis.DeskRecommendations.MODES.includes(arg)) throw new Error('목록 정렬을 다시 선택해 주세요.');
+      await this.storage.updatePreferences({ recommendationSort: arg });
+    } else if (method === 'clearRecommendationHistory') {
+      this.activity.reset(); this.history.clear(); await this.history.flush();
+    } else if (method === 'refreshFollowing') {
       this.followingRefreshAt = Date.now();
       await this.following.refresh();
     } else if (method === 'pinFollowedChannel') {
@@ -370,6 +393,7 @@ export class DeskController {
   }
 
   onTabChanged(tabId, changeInfo, tab) {
+    if (!changeInfo || changeInfo.status === 'loading' || changeInfo.url) this.activity.forget(tabId);
     const accountMayHaveChanged = changeInfo?.status === 'complete' && typeof tab?.url === 'string' && tab.url.startsWith('https://chzzk.naver.com/');
     // Cancel immediately, even while a recording export holds the command queue.
     if (accountMayHaveChanged) { this.following.clear(); this.followingRefreshAt = 0; }

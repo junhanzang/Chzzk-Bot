@@ -1,6 +1,6 @@
 import { createDom, createEventScope, setText as text } from '../shared/ui/dom.mjs';
 import { createChannelEditor } from '../shared/ui/channel-editor.mjs';
-import { presentation, slotIds, letters, getSlot as findSlot } from '../shared/ui/model.mjs';
+import { presentation, slotIds, letters, rankChannelList, getSlot as findSlot } from '../shared/ui/model.mjs';
 import { unavailable as isUnavailable } from './state.mjs';
 
 export function createFavoritesView({ document, run }) {
@@ -28,7 +28,7 @@ export function createFavoritesView({ document, run }) {
     snapshot = next;
     const { state, pending } = snapshot;
     const query = $('#channel-search').value;
-    const channels = presentation.filterChannels(state.channels, query);
+    const channels = rankChannelList(presentation.filterChannels(state.channels, query), state);
     const known = new Set(state.channels.map(channel => channel.id));
     for (const [id, value] of rows) if (!known.has(id)) { value.editor.dispose(); rows.delete(id); }
     for (const channel of state.channels) {

@@ -1,4 +1,4 @@
-const KEYS = { favorites: 'desk.favorites', pairing: 'desk.pairing', preferences: 'desk.preferences', session: 'desk.tabs' };
+const KEYS = { favorites: 'desk.favorites', pairing: 'desk.pairing', preferences: 'desk.preferences', session: 'desk.tabs', history: 'desk.recommendations' };
 
 /** Owns local settings and serializes partial session writes under the existing storage keys. */
 export class DeskStorage {
@@ -15,14 +15,15 @@ export class DeskStorage {
 
   async load() {
     const [local, session] = await Promise.all([
-      this.storage.local.get([KEYS.favorites, KEYS.pairing, KEYS.preferences]), this.storage.session.get(KEYS.session)
+      this.storage.local.get([KEYS.favorites, KEYS.pairing, KEYS.preferences, KEYS.history]), this.storage.session.get(KEYS.session)
     ]);
     this.#channels = this.model.normalizeSettings({ channels: local[KEYS.favorites] }).channels;
     const raw = local[KEYS.preferences] || {};
     this.#preferences = { ...this.model.normalizeLayout(raw), clipSeconds: this.model.normalizeClipSeconds(raw.clipSeconds), autoRewards: raw.autoRewards === true };
+    this.#preferences.recommendationSort = ['recommended', 'frequent', 'live', 'name'].includes(raw.recommendationSort) ? raw.recommendationSort : 'recommended';
     this.#presets = this.model.normalizeWatchPresets(raw.watchPresets, this.#channels);
     this.#session = session[KEYS.session] || {};
-    return { pairing: local[KEYS.pairing], session: structuredClone(this.#session) };
+    return { pairing: local[KEYS.pairing], session: structuredClone(this.#session), history: local[KEYS.history] };
   }
 
   async addChannel(channel) {
@@ -30,6 +31,7 @@ export class DeskStorage {
     if (this.#channels.length >= 100) throw new Error('즐겨찾기는 최대 100개까지 추가할 수 있어요.');
     await this.saveChannels([...this.#channels, channel]);
   }
+  saveHistory(value) { return this.storage.local.set({ [KEYS.history]: value }); }
 
   async removeChannel(id) {
     await this.saveChannels(this.#channels.filter(channel => channel.id !== id));

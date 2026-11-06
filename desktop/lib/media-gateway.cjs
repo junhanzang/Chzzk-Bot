@@ -4,6 +4,7 @@ const http = require('node:http');
 const { randomBytes } = require('node:crypto');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { listenLoopback } = require('./loopback-listener.cjs');
 
 const RESOURCE_TTL_MS = 180000;
 const MAX_RESOURCES = 2000;
@@ -97,18 +98,18 @@ class MediaGateway {
   start() {
     if (this._closing) return Promise.reject(new Error('미디어 연결이 종료되었습니다.'));
     if (this._starting) return this._starting;
-    this._starting = new Promise((resolve, reject) => {
+    this._starting = (async () => {
       this._server = http.createServer((request, response) => {
         this._handle(request, response).catch(() => this._error(response, 502));
       });
       this._server.requestTimeout = this.requestTimeoutMs + 1000;
       this._server.headersTimeout = Math.min(this.requestTimeoutMs, 10000);
-      this._server.on('error', () => reject(new Error('로컬 미디어 연결을 시작하지 못했습니다.')));
-      this._server.listen(0, '127.0.0.1', () => {
-        this._baseUrl = `http://127.0.0.1:${this._server.address().port}`;
-        resolve(this._baseUrl);
-      });
-    });
+      try {
+        const port = await listenLoopback(this._server, { isClosing: () => this._closing });
+        this._baseUrl = `http://127.0.0.1:${port}`;
+        return this._baseUrl;
+      } catch { throw new Error('로컬 미디어 연결을 시작하지 못했습니다.'); }
+    })();
     return this._starting;
   }
 

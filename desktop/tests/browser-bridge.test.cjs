@@ -8,6 +8,13 @@ const { BrowserBridge, BridgeUserError } = require('../lib/browser-bridge.cjs');
 const ORIGIN = `chrome-extension://${'a'.repeat(32)}`;
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
+test('a fetch-blocked explicit bridge port never publishes an unusable connection code', async () => {
+  const bridge = new BrowserBridge({ port: 10080 });
+  await assert.rejects(bridge.start(), /로컬 포트/);
+  assert.equal(bridge.connectionCode, null);
+  assert.deepEqual(await bridge.close(), { drained: true });
+});
+
 test('connected Chrome can call bot controls and clip queries but not configure or authenticate', async t => {
   const f = await fixture(t, { getBotState: () => ({ status: 'idle' }), queryClips: () => ({ items: [] }), configureBot: () => 'forbidden', authenticate: () => 'forbidden' });
   assert.equal((await request(f, { body: { method: 'getBotState' } })).body.value.status, 'idle');

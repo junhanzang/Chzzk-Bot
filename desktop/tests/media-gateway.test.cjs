@@ -18,6 +18,17 @@ async function setup(t, fetchImpl, options = {}) {
   return gateway;
 }
 
+test('closing during listener startup leaves no live socket or usable media URL', async () => {
+  const gateway = new MediaGateway({ fetchImpl: async () => playlist('#EXTM3U\n') });
+  const starting = gateway.start();
+  assert.equal(gateway.start(), starting);
+  const closing = gateway.close();
+  await assert.rejects(starting, /시작하지 못했습니다/);
+  await closing;
+  assert.equal(gateway._server.listening, false); assert.equal(gateway._baseUrl, null);
+  assert.throws(() => gateway.createStream(ROOT, { referer: REFERER }), /먼저 시작/);
+});
+
 test('upstream and referer validation reject SSRF, credentials, unexpected ports and key paths', () => {
   assert.equal(validateUpstream(KEY), KEY);
   assert.equal(validateUpstream('https://pstatic.net/a.ts'), 'https://pstatic.net/a.ts');

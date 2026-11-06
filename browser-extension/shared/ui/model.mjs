@@ -1,5 +1,6 @@
 import '../channels.js';
 import '../presentation.js';
+import '../recommendations.js';
 
 // These adapters expose the existing dual-runtime libraries to UI ES modules.
 export const presentation = globalThis.DeskPresentation;
@@ -12,4 +13,15 @@ export const slotKey = slotId => `slot-${slotId}`;
 export const getSlot = (state, slotId) => state.slots.find(slot => Number(slot.slotId) === slotId) || { slotId };
 export const audioSlots = state => Array.isArray(state.audioSlots) ? state.audioSlots.filter(id => slotIds.includes(id)) : slotIds.includes(state.audioSlot) ? [state.audioSlot] : [];
 export const isAudible = (state, slotId) => audioSlots(state).includes(slotId);
+export const recommendations = globalThis.DeskRecommendations;
+export function rankChannelList(channels, state) {
+  if (!state.recommendations && !state.following) return channels;
+  const followed = new Map((state.following?.channels || []).map(channel => [channel.id, channel]));
+  const favorites = new Map((state.channels || []).map(channel => [channel.id, channel]));
+  return recommendations.rankChannels(channels.map(channel => ({ ...followed.get(channel.id), ...channel,
+    pinned: favorites.get(channel.id)?.pinned === true })), {
+    categories: state.following?.categoryStatus === 'ready' ? state.following.categories : [],
+    history: state.recommendations?.history || {}, mode: state.recommendations?.mode || 'recommended'
+  });
+}
 export const errorMessage = error => error && typeof error.message === 'string' ? error.message : '요청을 처리하지 못했어요. 다시 시도해 주세요.';

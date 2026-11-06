@@ -42,3 +42,21 @@ test('multiple selected audio slots are distinct from the primary shortcut targe
   assert(isAudible(state, 0)); assert(isAudible(state, 1)); assert(!isAudible(state, 2));
   assert.deepEqual(audioSlots({ audioSlot: 0 }), [0]); assert.deepEqual(audioSlots({ audioSlots: [], audioSlot: 0 }), []);
 });
+
+test('category preference and local use order followed channels with reasons and explicit history reset', async () => {
+  const f = await fixture();
+  const category = { id: 'League_of_Legends', type: 'GAME', name: '리그 오브 레전드' };
+  f.snapshot.state.following = { status: 'ready', categoryStatus: 'ready', categories: [category],
+    channels: [{ id: A, name: '첫 방송', live: true }, { id: B, name: '관심 게임 방송', live: true, category }] };
+  f.snapshot.state.recommendations = { mode: 'recommended', history: {} }; f.view.render(f.snapshot);
+  let list = f.root.querySelector('.following-list'); assert.equal(list.children[0].querySelector('button').dataset.channel, B);
+  assert.match(list.children[0].textContent, /팔로우한 카테고리/);
+  f.snapshot.state.recommendations.history = { channels: { [A]: { visits: 30, watchSeconds: 7200, chatCount: 20, updatedAt: Date.now(), lastVisitAt: Date.now() } } };
+  f.view.render(f.snapshot); assert.equal(list.children[0].querySelector('button').dataset.channel, A);
+  assert.match(list.children[0].textContent, /자주 여는 방송|오래 본 방송/);
+  const sort = f.root.querySelector('select'); sort.value = 'name'; await sort.dispatch('change');
+  assert.deepEqual(f.calls[0], ['setRecommendationSort', 'name']);
+  await f.root.dispatch('click', f.root.querySelector('[data-action="clear-history"]')); assert.equal(f.calls.length, 1);
+  await f.root.dispatch('click', f.root.querySelector('[data-action="confirm-clear-history"]')); assert.equal(f.calls[1][0], 'clearRecommendationHistory');
+  f.view.dispose();
+});

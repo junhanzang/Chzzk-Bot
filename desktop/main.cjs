@@ -20,6 +20,9 @@ const { DeskController, loadDeskProfile } = require('./lib/desk-controller.cjs')
 const { BotService } = require('./lib/bot-service.cjs');
 const { FollowingSession } = require('./lib/following-session.cjs');
 const { ChatWindows } = require('./lib/chat-windows.cjs');
+const { loadRecommendationHistory } = require('./lib/recommendation-store.cjs');
+const { ActivityHost } = require('./lib/activity-host.cjs');
+const { ActivityBudget } = require('../browser-extension/shared/recommendations.js');
 
 app.setName('Chzzk Desk');
 const profileDir = resolveProfilePath({
@@ -53,6 +56,9 @@ app.whenReady().then(async () => {
   // Custom/test profiles remain self-contained; normal exports belong in Videos.
   const preferredClipsDir = process.env.DESK_DATA_DIR ? path.join(dataDir, 'clips') : path.join(app.getPath('videos'), 'Chzzk Desk');
   const profile = await loadDeskProfile({ store, dataDir, preferredClipsDir });
+  const history = await loadRecommendationHistory(dataDir, { onChange: publish });
+  const activityBudget = new ActivityBudget();
+  const activity = new ActivityHost({ onActivity: ({ channelId, watchSeconds, chatCount }) => history.recordActivity(channelId, activityBudget.accept(channelId, { watchSeconds, chatCount })) });
   let storageNotice = profile.notice;
   let ffmpegPath, ffmpegAvailable;
   try {
@@ -77,7 +83,7 @@ app.whenReady().then(async () => {
   remoteSession.on('will-download', event => event.preventDefault());
   authSession = new AuthSession({ session: remoteSession, BrowserWindow, partition: remotePartition });
   const following = new FollowingSession({ auth: authSession, fetchImpl: (url, options) => remoteSession.fetch(url, options), onChange: publish });
-  const chatWindows = new ChatWindows({ BrowserWindow, partition: remotePartition,
+  const chatWindows = new ChatWindows({ BrowserWindow, partition: remotePartition, activity,
     onLogin: () => authSession.open(), onNotice: notify });
   const rewards = new RewardsHost({ enabled: profile.settings.rewardSettings.enabled, onChange: publish,
     fetchImpl: (url, options) => remoteSession.fetch(url, options) });
@@ -92,14 +98,14 @@ app.whenReady().then(async () => {
   });
   const chat = new ChatHost({ context: slotId => controller?.autoClips.context(slotId),
     onBatch: batch => controller?.autoClips.submit(batch), onDetach: slotId => controller?.autoClips.reset(slotId) });
-  const players = new PlayerManager({ window: win, WebContentsView, partition: remotePartition, rewards, chat });
+  const players = new PlayerManager({ window: win, WebContentsView, partition: remotePartition, rewards, chat, activity });
   players.on('login-requested', () => authSession.open());
   players.on('external-requested', url => { shell.openExternal(url).catch(() => {}); });
   authSession.on('signed-in', () => { players.reloadAll(); chatWindows.reloadAll(); });
   const bot = new BotService({ sourceRoot: app.isPackaged ? path.join(process.resourcesPath, 'bot') : path.resolve(__dirname, '..'),
     dataDir, safeStorage, readAuth: () => authSession.readBotAuth() });
   controller = new DeskController({ profile, store, players, recordings, auth: authSession, version: app.getVersion(),
-    bot, following, chatWindows,
+    bot, following, chatWindows, history, activity, activityBudget,
     browserAvailable: () => Boolean(browserBridge?.connectionCode),
     openExternal: url => shell.openExternal(url), openPath: target => shell.openPath(target), revealPath: target => shell.showItemInFolder(target) });
   controller.on('change', publish);

@@ -2,6 +2,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const methods = ['getState', 'addChannel', 'removeChannel', 'assignSlot', 'clearSlot', 'selectAudio',
   'setAudioEnabled', 'openChat', 'refreshFollowing', 'pinFollowedChannel',
+  'setRecommendationSort', 'clearRecommendationHistory',
   'setBuffer', 'saveClip', 'reloadSlot', 'login', 'refreshAuth', 'openExternal', 'openClip', 'showClipsFolder', 'setPlayerBounds',
   'copyBrowserConnectionCode', 'resetBrowserConnection', 'setLayout', 'setAutoRewards', 'setClipSeconds', 'setAutoClipSettings',
   'renameChannel', 'setChannelPinned', 'saveWatchPreset', 'applyWatchPreset', 'removeWatchPreset', 'setAllBuffers',

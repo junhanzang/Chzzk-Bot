@@ -12,7 +12,7 @@ function allowedAppFile(file) {
   return ['package.json', 'LICENSE', 'desktop/main.cjs', 'desktop/preload.cjs'].includes(file) ||
     /^desktop\/lib\/[a-z0-9-]+\.cjs$/.test(file) ||
     /^desktop\/ui\/[a-z0-9-]+\.(?:mjs|html|css)$/.test(file) ||
-    /^browser-extension\/shared\/(?:channels\.js|presentation\.js|bot-state\.js|rewards\.js|chat-observer\.js|chat-popup\.js|following\.js|package\.json|REWARDS-SOURCES\.md|ui\/[a-z0-9-]+\.(?:mjs|css))$/.test(file);
+    /^browser-extension\/shared\/(?:channels\.js|presentation\.js|bot-state\.js|rewards\.js|chat-observer\.js|chat-popup\.js|following\.js|recommendations\.js|activity-observer\.js|package\.json|REWARDS-SOURCES\.md|ui\/[a-z0-9-]+\.(?:mjs|css))$/.test(file);
 }
 
 function checkRelativeReferences(files, readFile) {

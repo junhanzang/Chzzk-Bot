@@ -2,6 +2,7 @@
 
 const http = require('node:http');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
+const { listenLoopback } = require('./loopback-listener.cjs');
 
 const RPC_METHODS = Object.freeze(['getState', 'addChannel', 'removeChannel', 'assignSlot', 'clearSlot',
   'setBuffer', 'saveClip', 'openClip', 'showClipsFolder', 'setLayout', 'setClipSeconds',
@@ -103,14 +104,7 @@ class BrowserBridge {
         socket.once('close', () => this.#sockets.delete(socket));
       });
       server.on('clientError', (_error, socket) => socket.destroy());
-      await new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen({ host: '127.0.0.1', port: this.#requestedPort, exclusive: true }, () => {
-          server.removeListener('error', reject);
-          this.#port = server.address().port;
-          resolve();
-        });
-      });
+      this.#port = await listenLoopback(server, { port: this.#requestedPort, isClosing: () => this.#closing });
       return `${this.#port}:${this.#token}`;
     })();
     return this.#startPromise;

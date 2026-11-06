@@ -115,6 +115,7 @@
       return channels.some(channel => channel.id === id) ? id : null;
     });
     const normalized = { channels, slots, ...normalizeLayout(raw), clipSeconds: normalizeClipSeconds(raw.clipSeconds),
+      recommendationSort: ['recommended', 'frequent', 'live', 'name'].includes(raw.recommendationSort) ? raw.recommendationSort : 'recommended',
       rewardSettings: { enabled: raw.rewardSettings?.enabled === true },
       autoClipSettings: normalizeAutoClipSettings(raw.autoClipSettings, channels),
       watchPresets: normalizeWatchPresets(raw.watchPresets, channels) };

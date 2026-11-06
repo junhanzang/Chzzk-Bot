@@ -10,11 +10,12 @@ function isLoginUrl(value) {
 }
 
 class ChatWindows {
-  constructor({ BrowserWindow, partition, onLogin = () => {}, onNotice = () => {} }) {
+  constructor({ BrowserWindow, partition, onLogin = () => {}, onNotice = () => {}, activity }) {
     this.BrowserWindow = BrowserWindow;
     this.partition = partition;
     this.onLogin = onLogin;
     this.onNotice = onNotice;
+    this.activity = activity;
     this.windows = new Map();
     this.closed = false;
   }
@@ -35,6 +36,13 @@ class ChatWindows {
       webPreferences: { partition: this.partition, nodeIntegration: false, contextIsolation: true, sandbox: true }
     });
     this.windows.set(channelId, win);
+    const activityKey = `chat:${channelId}`;
+    win.webContents.on('did-finish-load', () => {
+      if (!this.closed && this.windows.get(channelId) === win) void this.activity?.attach(activityKey, win.webContents, channelId);
+    });
+    win.webContents.on('did-start-navigation', (_event, _target, inPlace, mainFrame) => { if (mainFrame && !inPlace) this.detachActivity(channelId, win); });
+    win.webContents.on('render-process-gone', () => this.detachActivity(channelId, win));
+    win.on('closed', () => this.detachActivity(channelId, win));
     const url = chatPopupUrl(channelId);
     const owned = () => !this.closed && this.windows.get(channelId) === win && !win.isDestroyed();
     const failed = error => this.failWindow(win, channelId, error);
@@ -72,10 +80,15 @@ class ChatWindows {
     win.focus();
   }
 
+  detachActivity(channelId, win) {
+    if (this.windows.get(channelId) === win) this.activity?.detach(`chat:${channelId}`);
+  }
+
   failWindow(win, channelId, error) {
     // Login refresh can intentionally replace a still-loading document.
     if (error?.code === 'ERR_ABORTED' || error?.errno === -3) return;
     if (this.closed || this.windows.get(channelId) !== win || win.isDestroyed()) return;
+    this.detachActivity(channelId, win);
     this.windows.delete(channelId);
     win.destroy();
     this.onNotice('채팅창을 불러오지 못했어요. 연결 상태를 확인한 뒤 다시 열어 주세요.', true);
@@ -93,9 +106,10 @@ class ChatWindows {
 
   closeAll() {
     this.closed = true;
-    const windows = [...this.windows.values()];
+    const entries = [...this.windows];
+    for (const [channelId, win] of entries) this.detachActivity(channelId, win);
     this.windows.clear();
-    for (const win of windows) if (!win.isDestroyed()) win.destroy();
+    for (const [, win] of entries) if (!win.isDestroyed()) win.destroy();
   }
 }
 

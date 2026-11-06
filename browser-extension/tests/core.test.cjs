@@ -96,9 +96,11 @@ function remoteFixture() {
   let unavailable = false;
   const fetchImpl = async (url, options) => {
     if (unavailable) throw new TypeError('network');
+    if (url === 'https://api.chzzk.naver.com/service/v1/categories/following') return {
+      ok: true, status: 200, json: async () => ({ code: 200, content: { followingList: [{ categoryId: 'Game_C', categoryType: 'GAME', categoryValue: '관심 게임' }] } }) };
     if (url.startsWith('https://api.chzzk.naver.com/service/v1/channels/followings?')) return {
       ok: true, status: 200, json: async () => ({ code: 200, content: { totalPage: 1,
-        followingList: [{ channel: { channelId: ID_C, channelName: '팔로잉 C', openLive: true } }] } }) };
+        followingList: [{ channel: { channelId: ID_C, channelName: '팔로잉 C', openLive: true }, liveInfo: { liveCategory: 'Game_C', categoryType: 'GAME', liveCategoryValue: '관심 게임' } }] } }) };
     assert.equal(url, 'http://127.0.0.1:43210/rpc');
     assert.equal(options.headers.Authorization, `Bearer ${TOKEN}`);
     assert.equal(options.credentials, 'omit');
@@ -188,6 +190,8 @@ for (const paired of [false, true]) test(`followed channels pin persistently wit
   const following = await f.controller.handle('refreshFollowing');
   assert.equal(following.following.status, 'ready');
   assert.equal(following.following.channels[0].id, ID_C);
+  assert.equal(following.following.categoryStatus, 'ready');
+  assert.deepEqual(following.following.categories[0], following.following.channels[0].category);
   assert.equal(following.channels.length, 0); assert.equal(f.tabs.size, 0);
   const pinned = await f.controller.handle('pinFollowedChannel', ID_C);
   assert.equal(pinned.channels[0].pinned, true); assert.equal(pinned.channels[0].name, '팔로잉 C');
@@ -223,6 +227,21 @@ test('login return invalidates account list immediately while another command ho
   try { assert.deepEqual(f.controller.snapshot().following.channels, []); assert.equal(f.controller.snapshot().following.status, 'idle'); }
   finally { release(); }
   await running; await changed;
+});
+
+test('local recommendation history survives worker restart, keeps sort and clears without deleting favorites', async () => {
+  const f = await setup(); await f.controller.handle('addChannel', { input: ID_A, name: 'A' });
+  await f.controller.history.flush();
+  assert.equal(f.local['desk.recommendations'].channels[ID_A].visits, 1);
+  await f.controller.handle('setRecommendationSort', 'frequent');
+  const revived = new f.DeskController({ chromeApi: f.chromeApi, model, fetchImpl: f.remote.fetchImpl });
+  const state = await revived.handle('getState');
+  assert.equal(state.recommendations.mode, 'frequent'); assert.equal(state.recommendations.history.channels[ID_A].visits, 1);
+  assert(!JSON.stringify(f.session).includes('lastVisitAt'));
+  const cleared = await revived.handle('clearRecommendationHistory');
+  assert.deepEqual(cleared.recommendations.history.channels, {}); assert.equal(cleared.channels.length, 1);
+  assert.deepEqual(f.local['desk.recommendations'].channels, {});
+  await assert.rejects(revived.handle('setRecommendationSort', 'malformed'), /정렬/);
 });
 
 test('invalid URLs do not persist favorites or open tabs', async () => {
@@ -642,7 +661,7 @@ test('clip length defaults to 30 and standalone choices persist without opening 
   for (const seconds of [15, 60, 30]) {
     const state = await f.controller.handle('setClipSeconds', seconds);
     assert.equal(state.clipSeconds, seconds);
-    assert.deepEqual(f.local['desk.preferences'], { layout: 'focus', mainSlot: 2, autoRewards: true, clipSeconds: seconds, watchPresets: [] });
+    assert.deepEqual(f.local['desk.preferences'], { layout: 'focus', mainSlot: 2, autoRewards: true, clipSeconds: seconds, recommendationSort: 'recommended', watchPresets: [] });
     const revived = new f.DeskController({ chromeApi: f.chromeApi, model, fetchImpl: f.remote.fetchImpl });
     assert.equal((await revived.handle('getState')).clipSeconds, seconds);
   }
